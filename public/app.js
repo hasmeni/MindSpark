@@ -704,6 +704,28 @@ let dragNode=null,dragStart=null,panning=false,panStart=null,moved=false;
 let resizing=null;     // {id, sx, sy, sw, sh}
 let dropTarget=null;   // id of node currently hovered as a reparent target
 
+// Snapshot positions of `id` and all its descendants so the whole subtree
+// can move together during a drag, then reset cleanly on cancel.
+function beginSubtreeDrag(id, mx, my){
+  const subtree={};
+  const collect = i => {
+    subtree[i] = { x: map.nodes[i].x, y: map.nodes[i].y };
+    childrenOf(i).forEach(collect);
+  };
+  collect(id);
+  return { mx, my, root:id, subtree };
+}
+// Apply (dx,dy) delta to the whole subtree captured in start.subtree.
+function applySubtreeDelta(start, dx, dy){
+  for(const id in start.subtree){
+    const base = start.subtree[id];
+    const n = map.nodes[id]; if(!n) continue;
+    n.x = base.x + dx; n.y = base.y + dy;
+    const el = document.querySelector(`.node[data-id="${id}"]`);
+    if(el){ el.style.left = n.x+'px'; el.style.top = n.y+'px'; }
+  }
+}
+
 // Used by render() to attach mousedown to the resize grip
 function startResize(id, ev){
   const n=map.nodes[id];
@@ -762,8 +784,33 @@ function reparent(childId, newParentId){
     childrenOf(id).forEach(c=>propagate(c,side));
   };
   propagate(childId, newSide);
+  // Nudge the dropped subtree so it sits a comfortable distance from the new
+  // parent rather than overlapping it. Only nudges if the user dropped *too
+  // close*; if they dropped well beyond the parent, their placement wins.
+  const GAP = 50;
+  const p = map.nodes[newParentId];
+  const c = map.nodes[childId];
+  const layout = map.layout || 'balanced';
+  let ddx = 0, ddy = 0;
+  if(layout === 'down'){
+    const minY = p.y + (p.h || 40) + GAP;
+    if(c.y < minY) ddy = minY - c.y;
+  } else if(newSide === 'right' || newSide === 'root'){
+    const minX = p.x + (p.w || 120) + GAP;
+    if(c.x < minX) ddx = minX - c.x;
+  } else if(newSide === 'left'){
+    const maxX = p.x - (c.w || 120) - GAP;
+    if(c.x > maxX) ddx = maxX - c.x;
+  }
+  if(ddx || ddy){
+    const shift = id => {
+      const n=map.nodes[id]; n.x += ddx; n.y += ddy;
+      childrenOf(id).forEach(shift);
+    };
+    shift(childId);
+  }
   // Preserve the user's manually arranged layout — just re-render with the
-  // new parent relationship. The dropped node stays where the user dropped it.
+  // new parent relationship.
   pushHistory(); render();
   toast('Re-parented to "'+(map.nodes[newParentId].text||'…')+'"');
 }
@@ -776,7 +823,7 @@ stage.addEventListener('mousedown',e=>{
     const id=nodeEl.dataset.id;
     select(id,false);
     dragNode=id; moved=false;
-    dragStart={mx:e.clientX,my:e.clientY,nx:map.nodes[id].x,ny:map.nodes[id].y};
+    dragStart=beginSubtreeDrag(id, e.clientX, e.clientY);
   } else {
     panning=true; panStart={x:e.clientX,y:e.clientY,vx:view.x,vy:view.y};
     if(sel){
@@ -799,10 +846,7 @@ window.addEventListener('mousemove',e=>{
   } else if(dragNode){
     const dx=(e.clientX-dragStart.mx)/view.k, dy=(e.clientY-dragStart.my)/view.k;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    const n=map.nodes[dragNode];
-    n.x=dragStart.nx+dx; n.y=dragStart.ny+dy;
-    const el=document.querySelector(`.node[data-id="${dragNode}"]`);
-    if(el){ el.style.left=n.x+'px'; el.style.top=n.y+'px'; }
+    applySubtreeDelta(dragStart, dx, dy);
     drawEdges(hiddenSet());
     positionNodeBar();
     // Detect a drop target under the cursor (only after a real drag has started)
@@ -854,7 +898,7 @@ stage.addEventListener('touchstart', e=>{
     const id=nodeEl.dataset.id;
     select(id,false);
     dragNode=id; moved=false;
-    dragStart={mx:t.clientX,my:t.clientY,nx:map.nodes[id].x,ny:map.nodes[id].y};
+    dragStart=beginSubtreeDrag(id, t.clientX, t.clientY);
   } else {
     panning=true; panStart={x:t.clientX,y:t.clientY,vx:view.x,vy:view.y};
     if(sel){ sel=null; document.querySelectorAll('.node.sel').forEach(n=>n.classList.remove('sel')); $('#nodebar')?.remove(); }
@@ -879,10 +923,7 @@ window.addEventListener('touchmove', e=>{
   if(dragNode){
     const dx=(t.clientX-dragStart.mx)/view.k, dy=(t.clientY-dragStart.my)/view.k;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    const n=map.nodes[dragNode];
-    n.x=dragStart.nx+dx; n.y=dragStart.ny+dy;
-    const el=document.querySelector(`.node[data-id="${dragNode}"]`);
-    if(el){ el.style.left=n.x+'px'; el.style.top=n.y+'px'; }
+    applySubtreeDelta(dragStart, dx, dy);
     drawEdges(hiddenSet());
     positionNodeBar();
     if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(t.clientX, t.clientY));
@@ -1242,6 +1283,19 @@ function importJSON(){
 }
 function exportPNG(){
   render();
+  // Read live theme colors from CSS custom properties so the export matches
+  // whatever theme/map style the user has selected.
+  const cs = getComputedStyle(document.documentElement);
+  const css = name => cs.getPropertyValue(name).trim();
+  const themeBg     = css('--paper')     || '#f4efe6';
+  const themeEdge   = css('--line-2')    || '#c8bda8';
+  const themeInk    = css('--ink')       || '#23201b';
+  const themeNodeBg = css('--node-bg')   || '#ffffff';
+  const themeLine   = css('--line')      || '#d8cfbf';
+  const accent      = css('--accent')    || '#e0613a';
+  const mapStyle  = map.style  || 'modern';
+  const mapLayout = map.layout || 'balanced';
+
   const hidden=hiddenSet(); const ids=Object.keys(map.nodes).filter(i=>!hidden.has(i));
   let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
   ids.forEach(i=>{const n=map.nodes[i];minx=Math.min(minx,n.x);miny=Math.min(miny,n.y);maxx=Math.max(maxx,n.x+(n.w||120));maxy=Math.max(maxy,n.y+(n.h||40));});
@@ -1249,23 +1303,86 @@ function exportPNG(){
   const W=(maxx-minx+pad*2),H=(maxy-miny+pad*2);
   const cv=document.createElement('canvas');cv.width=W*scale;cv.height=H*scale;
   const ctx=cv.getContext('2d');ctx.scale(scale,scale);
-  ctx.fillStyle='#f4efe6';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=themeBg; ctx.fillRect(0,0,W,H);
   ctx.translate(-minx+pad,-miny+pad);
-  // edges
-  ctx.strokeStyle='#c8bda8';ctx.lineWidth=2.2;ctx.lineCap='round';
-  ids.forEach(i=>{const n=map.nodes[i];if(!n.parent||hidden.has(n.parent))return;const p=map.nodes[n.parent];if(!p)return;
-    const left=n.side==='left';const x1=left?p.x:p.x+(p.w||0),y1=p.y+(p.h||0)/2,x2=left?n.x+(n.w||0):n.x,y2=n.y+(n.h||0)/2;const dx=Math.abs(x2-x1)*.5;
-    ctx.beginPath();ctx.moveTo(x1,y1);ctx.bezierCurveTo(x1+(left?-dx:dx),y1,x2+(left?dx:-dx),y2,x2,y2);ctx.stroke();});
-  // nodes
-  ids.forEach(i=>{const n=map.nodes[i];const isRoot=i===map.rootId;
-    const w=n.w||120,h=n.h||40;roundRect(ctx,n.x,n.y,w,h,12);
-    ctx.fillStyle=isRoot?(map.color||'#e0613a'):(n.color||'#fff');ctx.fill();
-    if(!isRoot){ctx.strokeStyle='#d8cfbf';ctx.lineWidth=1.5;ctx.stroke();}
-    ctx.fillStyle=isRoot?'#fff':'#23201b';ctx.font=(isRoot?'600 19px ':'500 15px ')+'"Bricolage Grotesque",sans-serif';
-    ctx.textBaseline='middle';
-    wrapText(ctx,n.text||'',n.x+(isRoot?22:15),n.y+h/2,w-(isRoot?44:30),20);
+
+  // Edges — match map style: bezier (modern/bubble), step (classic), straight (sketch)
+  const edgeColor = (mapStyle==='bubble') ? accent : (mapStyle==='sketch' ? themeInk : themeEdge);
+  const edgeWidth = (mapStyle==='bubble') ? 3 : (mapStyle==='classic' ? 1.6 : 2.2);
+  ctx.strokeStyle = edgeColor;
+  ctx.lineWidth   = edgeWidth;
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  ids.forEach(i=>{
+    const n=map.nodes[i]; if(!n.parent||hidden.has(n.parent)) return;
+    const p=map.nodes[n.parent]; if(!p) return;
+    let x1,y1,x2,y2,leftSide=(n.side==='left'),horizontal=true;
+    if(mapLayout==='down'){
+      horizontal=false;
+      x1=p.x+(p.w||0)/2; y1=p.y+(p.h||0);
+      x2=n.x+(n.w||0)/2; y2=n.y;
+    } else {
+      x1=leftSide ? p.x : p.x+(p.w||0); y1=p.y+(p.h||0)/2;
+      x2=leftSide ? n.x+(n.w||0) : n.x;  y2=n.y+(n.h||0)/2;
+    }
+    ctx.beginPath();
+    if(mapStyle==='classic'){
+      if(horizontal){ const mid=(x1+x2)/2; ctx.moveTo(x1,y1); ctx.lineTo(mid,y1); ctx.lineTo(mid,y2); ctx.lineTo(x2,y2); }
+      else { const mid=(y1+y2)/2; ctx.moveTo(x1,y1); ctx.lineTo(x1,mid); ctx.lineTo(x2,mid); ctx.lineTo(x2,y2); }
+    } else if(mapStyle==='sketch'){
+      ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+    } else {
+      if(horizontal){
+        const dx=Math.abs(x2-x1)*0.5;
+        ctx.moveTo(x1,y1);
+        ctx.bezierCurveTo(x1+(leftSide?-dx:dx),y1, x2+(leftSide?dx:-dx),y2, x2,y2);
+      } else {
+        const dy=Math.abs(y2-y1)*0.5;
+        ctx.moveTo(x1,y1);
+        ctx.bezierCurveTo(x1,y1+dy, x2,y2-dy, x2,y2);
+      }
+    }
+    ctx.stroke();
   });
+
+  // Nodes — also match shape per style
+  const nodeRadius = (mapStyle==='bubble') ? 999 : (mapStyle==='classic' || mapStyle==='sketch') ? 4 : 12;
+  ids.forEach(i=>{
+    const n=map.nodes[i]; const isRoot=(i===map.rootId);
+    const w=n.w||120, h=n.h||40;
+    const r = Math.min(nodeRadius, h/2);
+    roundRect(ctx, n.x, n.y, w, h, r);
+    if(isRoot){
+      ctx.fillStyle = map.color || accent;
+    } else {
+      ctx.fillStyle = n.color || themeNodeBg;
+    }
+    ctx.fill();
+    if(!isRoot && mapStyle !== 'bubble'){
+      ctx.strokeStyle = mapStyle==='sketch' ? themeInk : themeLine;
+      ctx.lineWidth = mapStyle==='sketch' ? 2 : 1.5;
+      ctx.stroke();
+    }
+    // Text — pick a color that contrasts with the node background
+    const bg = isRoot ? (map.color || accent) : (n.color || themeNodeBg);
+    ctx.fillStyle = n.textColor || (isRoot ? pickContrast(bg) : (n.color ? pickContrast(n.color) : themeInk));
+    const fontPx = n.fontSize || (isRoot ? 19 : 15);
+    const fontWeight = n.bold ? 700 : (isRoot ? 600 : 500);
+    const fontStyle = n.italic ? 'italic ' : '';
+    ctx.font = `${fontStyle}${fontWeight} ${fontPx}px "Bricolage Grotesque", sans-serif`;
+    ctx.textBaseline='middle';
+    wrapText(ctx, n.text||'', n.x+(isRoot?22:15), n.y+h/2, w-(isRoot?44:30), Math.round(fontPx*1.35));
+  });
+
   cv.toBlob(b=>{download(b,(map.title||'mindmap')+'.png');toast('PNG exported');});
+}
+// Pick black-or-white for best contrast against a hex background
+function pickContrast(hex){
+  const h = (hex||'').replace('#','');
+  if(h.length < 6) return '#23201b';
+  const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
+  // luminance roughly per WCAG
+  const L = (0.299*r + 0.587*g + 0.114*b) / 255;
+  return L > 0.6 ? '#23201b' : '#ffffff';
 }
 function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 function wrapText(ctx,text,x,y,maxW,lh){const words=text.split(/\s+/);let line='',lines=[];words.forEach(w=>{const t=line?line+' '+w:w;if(ctx.measureText(t).width>maxW&&line){lines.push(line);line=w;}else line=t;});if(line)lines.push(line);const startY=y-(lines.length-1)*lh/2;lines.forEach((l,i)=>ctx.fillText(l,x,startY+i*lh));}
@@ -1307,6 +1424,21 @@ $('#zoomIn').onclick=()=>zoom(1.15); $('#zoomOut').onclick=()=>zoom(.87); $('#zo
 })();
 $('#menuExport').onclick=exportMenu;
 $('#toggleSide').onclick=()=>$('#side').classList.toggle('collapsed');
+// On phones, default the sidebar to collapsed (slid off-screen overlay).
+// And tapping the dimmed canvas while it's open should close it.
+if(window.matchMedia('(max-width: 720px)').matches){
+  $('#side').classList.add('collapsed');
+  $('#stage').addEventListener('click', e=>{
+    const side=$('#side');
+    if(side.classList.contains('collapsed')) return;
+    // Only close if the user tapped the dimming overlay (the ::after pseudo) —
+    // which sits on top of all the topbar/zoombar at z-index 150. Easiest
+    // proxy: tap landed on #stage or #viewport (not on a node or chrome).
+    if(e.target.id==='stage' || e.target.id==='viewport'){
+      side.classList.add('collapsed');
+    }
+  });
+}
 $('#hintClose').onclick=()=>$('#hint').style.display='none';
 
 /* ---------- Themes ---------- */
@@ -1476,9 +1608,14 @@ const DONATE_CONFIG = {
   kofi:    'https://ko-fi.com/YOUR_USERNAME',
   // PayPal.me — supports embedding the amount in the URL: paypal.me/YOU/5
   paypal:  'https://www.paypal.com/paypalme/YOUR_USERNAME',
-  // UPI (India) — use a UPI deep-link. Replace with your VPA.
+  // UPI (India) — direct deep-link. Replace with your VPA.
   // Example: 'upi://pay?pa=yourname@okicici&pn=MindSpark&cu=INR'
   upi:     null,
+  // UPI QR code — works on any device. Put the image as a data URL
+  //   (paste a `data:image/png;base64,...` here)
+  // or as an external URL (e.g., '/upi-qr.png' if you place the file in /public).
+  upiQr:   '/upi-qr.png',
+  upiNote: 'prasadpatil252@okaxis',  // optional caption shown below the QR, e.g. "yourname@okicici"
   // GitHub Sponsors
   github:  null
 };
@@ -1488,12 +1625,13 @@ function showDonateModal(){
   document.querySelectorAll('.donate-modal').forEach(m=>m.remove());
   const m=document.createElement('div');
   m.className='donate-modal';
-  const has = k => DONATE_CONFIG[k] && !DONATE_CONFIG[k].includes('YOUR_USERNAME');
+  const has = k => DONATE_CONFIG[k] && !String(DONATE_CONFIG[k]).includes('YOUR_USERNAME');
   const providers = [
     has('bmac')   && {k:'bmac',   label:'Buy Me a Coffee', icon:'☕', url:DONATE_CONFIG.bmac,   color:'#ffdd00', supportsAmount:false},
     has('kofi')   && {k:'kofi',   label:'Ko-fi',           icon:'♥', url:DONATE_CONFIG.kofi,   color:'#ff5e5b', supportsAmount:false},
     has('paypal') && {k:'paypal', label:'PayPal',          icon:'P', url:DONATE_CONFIG.paypal, color:'#0070ba', supportsAmount:true},
-    has('upi')    && {k:'upi',    label:'UPI (India)',     icon:'₹', url:DONATE_CONFIG.upi,    color:'#5f259f', supportsAmount:true},
+    has('upi')    && {k:'upi',    label:'UPI app (India)', icon:'₹', url:DONATE_CONFIG.upi,    color:'#5f259f', supportsAmount:true},
+    has('upiQr')  && {k:'upiQr',  label:'Scan UPI QR',     icon:'⚌', url:null,                  color:'#5f259f', supportsAmount:false},
     has('github') && {k:'github', label:'GitHub Sponsors', icon:'♥', url:DONATE_CONFIG.github, color:'#bf3989', supportsAmount:false}
   ].filter(Boolean);
   const configured = providers.length>0;
@@ -1552,6 +1690,7 @@ function showDonateModal(){
   m.querySelectorAll('.donate-provider').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const p = providers.find(x=>x.k===btn.dataset.k);
+      if(p.k === 'upiQr'){ showUpiQrView(m); return; }
       let url = p.url;
       if(p.supportsAmount && chosenAmount){
         if(p.k==='paypal') url = url.replace(/\/?$/, '/'+chosenAmount);
@@ -1574,6 +1713,32 @@ function showDonateModal(){
   });
 }
 $('#donateBtn')?.addEventListener('click', showDonateModal);
+
+// Swap the donate modal's card into a "scan UPI QR" view.
+function showUpiQrView(modal){
+  const card = modal.querySelector('.donate-card');
+  // Save the original innerHTML so we can restore it via the back button
+  if(!card.dataset.originalHTML) card.dataset.originalHTML = card.innerHTML;
+  card.innerHTML = `
+    <button class="donate-close" aria-label="Close">×</button>
+    <button class="donate-back" aria-label="Back">← Back</button>
+    <div class="qr-view">
+      <h2>Scan to pay via UPI</h2>
+      <p class="qr-sub">Open any UPI app (Google Pay, PhonePe, Paytm, BHIM) and scan the code below.</p>
+      <div class="qr-frame">
+        <img class="qr-image" src="${DONATE_CONFIG.upiQr}" alt="UPI QR code"/>
+      </div>
+      ${DONATE_CONFIG.upiNote ? `<div class="qr-note">${escapeHtml(DONATE_CONFIG.upiNote)}</div>` : ''}
+      ${DONATE_CONFIG.upi ? `<a class="qr-deeplink" href="${DONATE_CONFIG.upi}">Or tap to open in your UPI app →</a>` : ''}
+      <p class="qr-foot">Thank you for supporting MindSpark 💛</p>
+    </div>`;
+  card.querySelector('.donate-close').onclick = () => modal.remove();
+  card.querySelector('.donate-back').onclick  = () => {
+    card.innerHTML = card.dataset.originalHTML;
+    showDonateModal();  // re-wire — easier than rebuilding events
+    modal.remove();
+  };
+}
 async function proceedBoot(){
   let idx=[];
   try{ idx=await Store.list(); }catch(e){}

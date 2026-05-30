@@ -18,7 +18,14 @@
 <body>
 <div class="app">
   <aside class="side" id="side">
-    <div class="brand"><div class="mark"></div><h1>Mind<span>Spark</span></h1></div>
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 64 64" width="30" height="30" aria-hidden="true">
+        <defs><radialGradient id="brandGrad" cx="30%" cy="25%"><stop offset="0%" stop-color="#ff8a5b"/><stop offset="100%" stop-color="#e0613a"/></radialGradient></defs>
+        <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#brandGrad)"/>
+        <path d="M32 16 L36 28 L48 32 L36 36 L32 48 L28 36 L16 32 L28 28 Z" fill="#fff" opacity=".95"/>
+      </svg>
+      <h1>Mind<span>Spark</span></h1>
+    </div>
     <button class="new-map" id="newMap">＋ New mind map</button>
     <div class="side-scroll">
       <div class="side-label">Your maps</div>
@@ -88,7 +95,14 @@
 <!-- Login overlay — shown only in cloud (static-deploy) mode when not authenticated -->
 <div class="login-overlay" id="loginOverlay" style="display:none">
   <div class="login-card">
-    <div class="login-brand"><span class="mark"></span><h1>Mind<span>Spark</span></h1></div>
+    <div class="login-brand">
+      <svg class="mark" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
+        <defs><radialGradient id="loginGrad" cx="30%" cy="25%"><stop offset="0%" stop-color="#ff8a5b"/><stop offset="100%" stop-color="#e0613a"/></radialGradient></defs>
+        <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#loginGrad)"/>
+        <path d="M32 16 L36 28 L48 32 L36 36 L32 48 L28 36 L16 32 L28 28 Z" fill="#fff" opacity=".95"/>
+      </svg>
+      <h1>Mind<span>Spark</span></h1>
+    </div>
     <h2>Sign in with GitHub</h2>
     <p>Your mind maps will be saved as private JSON files in a repository called <code>mindspark-maps</code> on your own GitHub account. This app talks to GitHub directly — there's no server in between.</p>
 
