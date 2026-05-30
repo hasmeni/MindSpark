@@ -38,11 +38,6 @@ jobs:
         with:
           # Upload entire repository
           path: '.'     
-      - name: Install Node.js
-        uses: actions/setup-node@v4 # Official action to install Node.js
-        with:
-          node-version: 20 # Specify your preferred Node version (e.g., 18, 20, 22)
-          cache: 'npm' # Automatically caches dependencies for faster builds
       - name: Run server 
         run: node server.js
       - name: Deploy to GitHub Pages
