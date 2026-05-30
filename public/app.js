@@ -762,7 +762,9 @@ function reparent(childId, newParentId){
     childrenOf(id).forEach(c=>propagate(c,side));
   };
   propagate(childId, newSide);
-  pushHistory(); autoLayout();
+  // Preserve the user's manually arranged layout — just re-render with the
+  // new parent relationship. The dropped node stays where the user dropped it.
+  pushHistory(); render();
   toast('Re-parented to "'+(map.nodes[newParentId].text||'…')+'"');
 }
 
@@ -823,6 +825,99 @@ window.addEventListener('mouseup',()=>{
   }
   panning=false;
 });
+
+/* ============================================================
+   TOUCH SUPPORT — mirrors the mouse handlers, plus pinch-zoom.
+   Single finger: pan the canvas, or drag a node, or tap to select.
+   Two fingers: pinch to zoom.
+   ============================================================ */
+let pinch=null;  // {d0, k0, cx, cy} while pinch-zooming
+function tPt(t){ return {clientX:t.clientX, clientY:t.clientY}; }
+
+stage.addEventListener('touchstart', e=>{
+  if(!e.touches) return;
+  // Pinch starts: two fingers down anywhere on the stage
+  if(e.touches.length===2){
+    const a=e.touches[0], b=e.touches[1];
+    const dx=b.clientX-a.clientX, dy=b.clientY-a.clientY;
+    pinch={ d0:Math.hypot(dx,dy), k0:view.k, cx:(a.clientX+b.clientX)/2, cy:(a.clientY+b.clientY)/2 };
+    dragNode=null; panning=false; resizing=null;
+    e.preventDefault();
+    return;
+  }
+  if(e.touches.length!==1) return;
+  const t=e.touches[0];
+  // Don't intercept taps on the chrome / overlay UI
+  if(t.target && t.target.closest && t.target.closest('.topbar, .zoombar, .hint, .toast, .nodebar, .empty, .search-wrap, .save-pill, .tb-group, .side, .picker, .notes-popup, .donate-modal, .theme-panel, .login-overlay, .user-pill')) return;
+  const nodeEl=t.target.closest?.('.node');
+  if(nodeEl && !nodeEl.classList.contains('editing')){
+    const id=nodeEl.dataset.id;
+    select(id,false);
+    dragNode=id; moved=false;
+    dragStart={mx:t.clientX,my:t.clientY,nx:map.nodes[id].x,ny:map.nodes[id].y};
+  } else {
+    panning=true; panStart={x:t.clientX,y:t.clientY,vx:view.x,vy:view.y};
+    if(sel){ sel=null; document.querySelectorAll('.node.sel').forEach(n=>n.classList.remove('sel')); $('#nodebar')?.remove(); }
+  }
+}, {passive:false});
+
+window.addEventListener('touchmove', e=>{
+  if(!e.touches) return;
+  if(pinch && e.touches.length===2){
+    const a=e.touches[0], b=e.touches[1];
+    const d=Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
+    const k=Math.min(3, Math.max(0.1, pinch.k0 * (d/pinch.d0)));
+    const r=stage.getBoundingClientRect();
+    const px=pinch.cx-r.left, py=pinch.cy-r.top;
+    const old=view.k;
+    view.x = px-(px-view.x)*(k/old); view.y = py-(py-view.y)*(k/old); view.k = k;
+    applyView();
+    e.preventDefault(); return;
+  }
+  if(e.touches.length!==1) return;
+  const t=e.touches[0];
+  if(dragNode){
+    const dx=(t.clientX-dragStart.mx)/view.k, dy=(t.clientY-dragStart.my)/view.k;
+    if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+    const n=map.nodes[dragNode];
+    n.x=dragStart.nx+dx; n.y=dragStart.ny+dy;
+    const el=document.querySelector(`.node[data-id="${dragNode}"]`);
+    if(el){ el.style.left=n.x+'px'; el.style.top=n.y+'px'; }
+    drawEdges(hiddenSet());
+    positionNodeBar();
+    if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(t.clientX, t.clientY));
+    e.preventDefault();
+  } else if(panning){
+    view.x=panStart.vx+(t.clientX-panStart.x); view.y=panStart.vy+(t.clientY-panStart.y);
+    applyView();
+    e.preventDefault();
+  }
+}, {passive:false});
+
+window.addEventListener('touchend', e=>{
+  if(!e.touches) return;
+  if(pinch && e.touches.length<2){ pinch=null; }
+  if(e.touches.length>0) return;       // still touching
+  if(dragNode){
+    if(dropTarget){ reparent(dragNode, dropTarget); }
+    else if(moved){ pushHistory(); }
+    setDropTarget(null);
+    dragNode=null;
+  }
+  panning=false;
+});
+
+// Double-tap to edit (since dblclick doesn't fire reliably on touch)
+let lastTap=0, lastTapId=null;
+stage.addEventListener('touchend', e=>{
+  const t=e.changedTouches?.[0]; if(!t) return;
+  const nodeEl=t.target.closest?.('.node');
+  if(!nodeEl) { lastTap=0; return; }
+  const id=nodeEl.dataset.id, now=Date.now();
+  if(id===lastTapId && now-lastTap<350){ startEdit(id); lastTap=0; }
+  else { lastTap=now; lastTapId=id; }
+});
+
 stage.addEventListener('wheel',e=>{
   e.preventDefault();
   const r=stage.getBoundingClientRect();
@@ -1369,7 +1464,116 @@ try{ applyTheme(localStorage.getItem('mindspark:theme')||'light'); }catch(e){}
 
 applyView();
 
-/* ---------- boot: probe mode, then (if cloud) gate behind GitHub login ---------- */
+/* ============================================================
+   DONATE — quick-amount picker. Edit DONATE_CONFIG below to
+   point at your own payment links. Set any line to null/'' to
+   hide that provider in the modal.
+   ============================================================ */
+const DONATE_CONFIG = {
+  // Buy Me a Coffee — works globally. Replace USERNAME with yours.
+  bmac:    'https://www.buymeacoffee.com/YOUR_USERNAME',
+  // Ko-fi — works globally.
+  kofi:    'https://ko-fi.com/YOUR_USERNAME',
+  // PayPal.me — supports embedding the amount in the URL: paypal.me/YOU/5
+  paypal:  'https://www.paypal.com/paypalme/YOUR_USERNAME',
+  // UPI (India) — use a UPI deep-link. Replace with your VPA.
+  // Example: 'upi://pay?pa=yourname@okicici&pn=MindSpark&cu=INR'
+  upi:     null,
+  // GitHub Sponsors
+  github:  null
+};
+const DONATE_AMOUNTS = [3, 5, 10, 25];
+
+function showDonateModal(){
+  document.querySelectorAll('.donate-modal').forEach(m=>m.remove());
+  const m=document.createElement('div');
+  m.className='donate-modal';
+  const has = k => DONATE_CONFIG[k] && !DONATE_CONFIG[k].includes('YOUR_USERNAME');
+  const providers = [
+    has('bmac')   && {k:'bmac',   label:'Buy Me a Coffee', icon:'☕', url:DONATE_CONFIG.bmac,   color:'#ffdd00', supportsAmount:false},
+    has('kofi')   && {k:'kofi',   label:'Ko-fi',           icon:'♥', url:DONATE_CONFIG.kofi,   color:'#ff5e5b', supportsAmount:false},
+    has('paypal') && {k:'paypal', label:'PayPal',          icon:'P', url:DONATE_CONFIG.paypal, color:'#0070ba', supportsAmount:true},
+    has('upi')    && {k:'upi',    label:'UPI (India)',     icon:'₹', url:DONATE_CONFIG.upi,    color:'#5f259f', supportsAmount:true},
+    has('github') && {k:'github', label:'GitHub Sponsors', icon:'♥', url:DONATE_CONFIG.github, color:'#bf3989', supportsAmount:false}
+  ].filter(Boolean);
+  const configured = providers.length>0;
+  m.innerHTML = `
+    <div class="donate-backdrop"></div>
+    <div class="donate-card">
+      <button class="donate-close" aria-label="Close">×</button>
+      <div class="donate-head">
+        <div class="donate-icon">♥</div>
+        <h2>Support MindSpark</h2>
+        <p>MindSpark is free and open source. If it's useful to you, a small contribution helps keep it that way.</p>
+      </div>
+      ${configured ? `
+        <div class="donate-amounts">
+          <div class="donate-label">Pick an amount</div>
+          <div class="donate-amount-row">
+            ${DONATE_AMOUNTS.map(a=>`<button class="donate-amt" data-amt="${a}">$${a}</button>`).join('')}
+            <div class="donate-custom">
+              <span>$</span><input type="number" id="donateCustomAmt" min="1" placeholder="other" />
+            </div>
+          </div>
+        </div>
+        <div class="donate-providers">
+          <div class="donate-label">Donate via</div>
+          ${providers.map(p=>`
+            <button class="donate-provider" data-k="${p.k}" style="--p-color:${p.color}">
+              <span class="dp-icon">${p.icon}</span>
+              <span class="dp-label">${p.label}</span>
+              <span class="dp-arrow">→</span>
+            </button>`).join('')}
+        </div>
+      ` : `
+        <div class="donate-empty">
+          <p><b>Donations aren't configured yet.</b></p>
+          <p class="small">If you're the host of this MindSpark instance, open <code>public/app.js</code>, scroll to <code>DONATE_CONFIG</code>, and add your Buy Me a Coffee / Ko-fi / PayPal / UPI links. The button will go live the next time you redeploy.</p>
+        </div>
+      `}
+      <div class="donate-foot">
+        <a href="#" id="shareLink">↗ Share MindSpark</a>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+
+  let chosenAmount = null;
+  const amtBtns = m.querySelectorAll('.donate-amt');
+  const customInput = m.querySelector('#donateCustomAmt');
+  amtBtns.forEach(b=>b.addEventListener('click',()=>{
+    chosenAmount = +b.dataset.amt;
+    amtBtns.forEach(x=>x.classList.toggle('on', x===b));
+    if(customInput) customInput.value='';
+  }));
+  if(customInput) customInput.addEventListener('input',()=>{
+    const v=parseFloat(customInput.value);
+    if(v>0){ chosenAmount=v; amtBtns.forEach(b=>b.classList.remove('on')); }
+  });
+  m.querySelectorAll('.donate-provider').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const p = providers.find(x=>x.k===btn.dataset.k);
+      let url = p.url;
+      if(p.supportsAmount && chosenAmount){
+        if(p.k==='paypal') url = url.replace(/\/?$/, '/'+chosenAmount);
+        else if(p.k==='upi') url = url + (url.includes('?')?'&':'?') + 'am='+chosenAmount;
+      }
+      window.open(url, '_blank', 'noopener');
+    });
+  });
+  const close = () => m.remove();
+  m.querySelector('.donate-close').onclick = close;
+  m.querySelector('.donate-backdrop').onclick = close;
+  m.querySelector('#shareLink')?.addEventListener('click',e=>{
+    e.preventDefault();
+    const url = location.origin + location.pathname;
+    if(navigator.share) navigator.share({title:'MindSpark', text:'A free, open mind-mapping app', url}).catch(()=>{});
+    else { navigator.clipboard?.writeText(url); toast('Link copied'); }
+  });
+  document.addEventListener('keydown', function esc(e){
+    if(e.key==='Escape'){ close(); document.removeEventListener('keydown', esc); }
+  });
+}
+$('#donateBtn')?.addEventListener('click', showDonateModal);
 async function proceedBoot(){
   let idx=[];
   try{ idx=await Store.list(); }catch(e){}

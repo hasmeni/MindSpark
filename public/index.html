@@ -2,8 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
+<meta name="theme-color" content="#e0613a" />
+<meta name="apple-mobile-web-app-title" content="MindSpark" />
+<meta name="application-name" content="MindSpark" />
 <title>MindSpark — Mind Mapping</title>
+<!-- Inline-SVG favicon: orange spark on a rounded square — matches the brand mark -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><radialGradient id='g' cx='30%25' cy='25%25'><stop offset='0%25' stop-color='%23ff8a5b'/><stop offset='100%25' stop-color='%23e0613a'/></radialGradient></defs><rect x='4' y='4' width='56' height='56' rx='14' fill='url(%23g)'/><path d='M32 16 L36 28 L48 32 L36 36 L32 48 L28 36 L16 32 L28 28 Z' fill='%23fff' opacity='0.95'/></svg>" />
+<link rel="apple-touch-icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23e0613a'/><path d='M32 16 L36 28 L48 32 L36 36 L32 48 L28 36 L16 32 L28 28 Z' fill='%23fff'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&display=swap" rel="stylesheet">
@@ -45,6 +51,7 @@
         <button class="tb" id="searchBtn" title="Search">⌕</button>
         <button class="tb" id="themeBtn" title="Theme">🎨</button>
         <button class="tb" id="menuExport" title="Export">⤓</button>
+        <button class="tb donate-btn" id="donateBtn" title="Support MindSpark">♥</button>
       </div>
       <div class="user-pill" id="userPill" style="display:none">
         <img id="userAvatar" alt="" />
