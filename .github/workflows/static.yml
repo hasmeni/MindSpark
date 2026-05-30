@@ -33,13 +33,13 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
-      - name: Run build script
-        run: node server.js
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload entire repository
-          path: './'
+          path: '.'     
+      - name: Run server 
+        run: node server.js
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
