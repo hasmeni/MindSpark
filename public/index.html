@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MindSpark — Mind Mapping</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side">
+    <div class="brand"><div class="mark"></div><h1>Mind<span>Spark</span></h1></div>
+    <button class="new-map" id="newMap">＋ New mind map</button>
+    <div class="side-scroll">
+      <div class="side-label">Your maps</div>
+      <div id="mapList"></div>
+    </div>
+    <div class="side-foot">Open source · <b>no limits</b><br>Self-hosted · maps saved to your database.</div>
+  </aside>
+
+  <div class="stage" id="stage">
+    <div id="viewport">
+      <svg id="edges"></svg>
+    </div>
+
+    <div class="topbar">
+      <div class="tb-group">
+        <button class="tb" id="toggleSide" title="Toggle sidebar">☰</button>
+      </div>
+      <input class="title-edit" id="mapTitle" placeholder="Untitled map" />
+      <div class="tb-group">
+        <button class="tb" id="undo" title="Undo (Ctrl+Z)">↶</button>
+        <button class="tb" id="redo" title="Redo (Ctrl+Y)">↷</button>
+      </div>
+      <div class="tb-group">
+        <button class="tb wide primary" id="addChild" title="Add child (Tab)">＋ Topic</button>
+        <button class="tb" id="layout" title="Tidy layout (rearrange topics into a balanced tree)">⟐</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="search-wrap" id="searchWrap"><input id="search" placeholder="Search topics…"/></div>
+      <div class="tb-group">
+        <button class="tb" id="searchBtn" title="Search">⌕</button>
+        <button class="tb" id="themeBtn" title="Theme">🎨</button>
+        <button class="tb" id="menuExport" title="Export">⤓</button>
+      </div>
+      <div class="user-pill" id="userPill" style="display:none">
+        <img id="userAvatar" alt="" />
+        <span id="userName"></span>
+        <button id="userSignOut" title="Sign out">⏻</button>
+      </div>
+      <div class="save-pill" id="savePill"><span class="ring"></span><span id="saveText">Saved</span></div>
+    </div>
+
+    <div class="empty" id="empty" style="display:none">
+      <div class="e-card">
+        <h2>A blank canvas</h2>
+        <p>Create your first mind map and start branching ideas. Everything saves automatically.</p>
+        <button class="tb wide primary" id="emptyNew" style="margin:0 auto;height:42px">＋ Create a map</button>
+      </div>
+    </div>
+
+    <div class="zoombar">
+      <button id="zoomIn">＋</button>
+      <div class="zoom-val" id="zoomVal" title="Click to set custom zoom %">100%</div>
+      <button id="zoomOut">－</button>
+      <button id="zoomFit" title="Fit all topics to screen (camera only)">⊡</button>
+    </div>
+
+    <div class="hint" id="hint">
+      <button class="close" id="hintClose">×</button>
+      <b>Tab</b> child · <b>Enter</b> sibling · <b>↑↓←→</b> navigate · <b>F2</b>/dbl-click edit · <b>Del</b> remove · drag to move · scroll to zoom
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+</div>
+
+<!-- Login overlay — shown only in cloud (static-deploy) mode when not authenticated -->
+<div class="login-overlay" id="loginOverlay" style="display:none">
+  <div class="login-card">
+    <div class="login-brand"><span class="mark"></span><h1>Mind<span>Spark</span></h1></div>
+    <h2>Sign in with GitHub</h2>
+    <p>Your mind maps will be saved as private JSON files in a repository called <code>mindspark-maps</code> on your own GitHub account. This app talks to GitHub directly — there's no server in between.</p>
+
+    <ol class="login-steps">
+      <li>
+        <a class="login-step-link" href="https://github.com/settings/tokens/new?description=MindSpark&amp;scopes=repo" target="_blank" rel="noopener">
+          Create a personal access token on GitHub →
+        </a>
+        <div class="login-step-hint">Pick <b>classic</b> token, scope: <code>repo</code> (so the app can create the private repo and read/write files in it).</div>
+      </li>
+      <li>
+        <label for="ghPat">Paste your token here:</label>
+        <div class="token-input">
+          <input type="password" id="ghPat" placeholder="ghp_…" autocomplete="off" spellcheck="false" />
+          <button id="ghSignIn">Sign in</button>
+        </div>
+        <div class="login-error" id="ghError"></div>
+      </li>
+    </ol>
+
+    <details class="login-extra">
+      <summary>How does this work / is it safe?</summary>
+      <p>MindSpark runs entirely in your browser. The token is stored only in <code>localStorage</code> on this device, and is sent only to <code>api.github.com</code> — never to any third party.</p>
+      <p>On first sign-in the app creates a <b>private</b> repo called <code>mindspark-maps</code> in your account. Every save commits a small JSON file to that repo, so your data is versioned and you can <code>git clone</code> it any time.</p>
+      <p>To revoke access: <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a></p>
+    </details>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

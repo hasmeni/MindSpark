@@ -1,0 +1,14 @@
+{
+  "name": "mindspark",
+  "version": "1.0.0",
+  "description": "Open-source, self-hostable mind mapping app with a SQLite database backend. Zero dependencies, no restrictions.",
+  "license": "MIT",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
