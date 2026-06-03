@@ -1,3 +1,4 @@
+# Simple workflow for deploying static content to GitHub Pages
 name: Deploy static content to Pages
 
 on:
@@ -36,9 +37,9 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload entire repository
-          path: './home'
-      - name: Setup Node.js environment
-        uses: actions/setup-node@v6.4.0
+          path: '.' 
+      - name: Docker Setup Docker
+        uses: docker/setup-docker-action@v5.2.0
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
