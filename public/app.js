@@ -4461,7 +4461,12 @@ function getUiScale(){
 function applyUiScale(v){
   // CSS `zoom` on the root scales the entire UI uniformly — chrome and canvas —
   // like browser zoom, while keeping pointer/geometry math self-consistent.
-  document.documentElement.style.zoom = (v && v!==1) ? String(v) : '';
+  // We also expose the factor as --ui-zoom so full-viewport containers can size
+  // themselves to calc(100vh / zoom) — otherwise a 100vh box would render at
+  // only `zoom`× the screen height and leave a gap at the bottom.
+  const z = (v && v>=0.5 && v<=2) ? v : 1;
+  document.documentElement.style.zoom = z!==1 ? String(z) : '';
+  document.documentElement.style.setProperty('--ui-zoom', String(z));
 }
 function setUiScale(v){
   v = Math.min(2, Math.max(0.5, v||1));

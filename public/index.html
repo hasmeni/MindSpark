@@ -17,7 +17,10 @@
 <script>
   // Apply the saved interface scale immediately (before paint) to avoid a flash.
   try{ var _s=parseFloat(localStorage.getItem('mindspark:uiScale'));
-    if(_s && _s>=0.5 && _s<=2 && _s!==1) document.documentElement.style.zoom=String(_s); }catch(e){}
+    if(_s && _s>=0.5 && _s<=2 && _s!==1){
+      document.documentElement.style.zoom=String(_s);
+      document.documentElement.style.setProperty('--ui-zoom', String(_s));
+    } }catch(e){}
 </script>
 </head>
 <body>

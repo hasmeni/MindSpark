@@ -113,7 +113,7 @@
   button{font-family:inherit;cursor:pointer}
 
   /* ===== App shell ===== */
-  .app{display:grid;grid-template-columns:auto 1fr;grid-template-rows:minmax(0,1fr);height:100vh}
+  .app{display:grid;grid-template-columns:auto 1fr;grid-template-rows:minmax(0,1fr);height:calc(100vh / var(--ui-zoom, 1))}
 
   /* ===== Sidebar ===== */
   .side{width:268px;min-height:0;background:var(--chrome);border-right:1px solid var(--chrome-edge);display:flex;flex-direction:column;transition:width .22s cubic-bezier(.4,0,.2,1)}
@@ -767,7 +767,7 @@
   body.focus-mode .empty .btn-row,
   body.focus-mode .search-wrap{display:none !important}
   body.focus-mode .app{grid-template-columns:1fr}
-  body.focus-mode .stage{width:100vw; height:100vh}
+  body.focus-mode .stage{width:calc(100vw / var(--ui-zoom, 1)); height:calc(100vh / var(--ui-zoom, 1))}
   /* Zoom bar fades out unless you hover near it */
   body.focus-mode .zoombar{opacity:.25; transition:opacity .25s}
   body.focus-mode .zoombar:hover{opacity:1}
