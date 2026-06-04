@@ -4410,6 +4410,17 @@ $('#collapseAll')?.addEventListener('click', ()=>{
 });
 $('#undo').onclick=undo; $('#redo').onclick=redo;
 $('#zoomIn').onclick=()=>zoom(1.15); $('#zoomOut').onclick=()=>zoom(.87); $('#zoomFit').onclick=fit;
+// On window resize: re-evaluate the auto UI scale (only if the user hasn't set
+// their own), then re-fit the map to the new viewport. Debounced.
+let _resizeT=null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(_resizeT);
+  _resizeT=setTimeout(()=>{
+    if(!hasExplicitUiScale()) applyUiScale(autoScaleForWidth(window.innerWidth));
+    // wait one frame so the zoom reflow settles before measuring for fit()
+    requestAnimationFrame(()=>{ if(map) fit(); });
+  }, 180);
+});
 $('#minimap')?.addEventListener('mousedown', e=>{ e.stopPropagation(); minimapJump(e.clientX, e.clientY); });
 $('#minimap')?.addEventListener('click', e=>e.stopPropagation());
 // Click the zoom % to enter a custom value
@@ -4454,9 +4465,23 @@ if(window.matchMedia('(max-width: 720px)').matches){
 $('#hintClose').onclick=()=>$('#hint').style.display='none';
 
 /* ---------- UI scale (whole-interface zoom, persisted) ---------- */
+// Auto default based on viewport WIDTH (not physical size, which browsers can't
+// report). Values align with the picker buttons so the active one highlights.
+// Only used when the user hasn't explicitly chosen a scale.
+function autoScaleForWidth(w){
+  if(w < 760)  return 1;     // mobile — responsive layout handles density
+  if(w < 1000) return 0.8;   // very narrow desktop window
+  if(w < 1300) return 0.9;   // smallish desktop window
+  return 1;                  // roomy — native size
+}
+function hasExplicitUiScale(){
+  const v=parseFloat(localStorage.getItem('mindspark:uiScale'));
+  return !!(v && v>=0.5 && v<=2);
+}
 function getUiScale(){
   const v=parseFloat(localStorage.getItem('mindspark:uiScale'));
-  return (v && v>=0.5 && v<=2) ? v : 1;
+  if(v && v>=0.5 && v<=2) return v;                 // explicit user choice wins
+  return autoScaleForWidth(window.innerWidth);       // otherwise auto by width
 }
 function applyUiScale(v){
   // CSS `zoom` on the root scales the entire UI uniformly — chrome and canvas —
@@ -5084,6 +5109,7 @@ async function consumePendingImport(){
 }
 
 (async()=>{
+  applyUiScale(getUiScale());   // saved choice, or auto default by viewport width
   // Read-only shared link? Decode and render a view-only map — no store, no
   // login, no account needed by the recipient.
   if(await tryEnterSharedView()) return;

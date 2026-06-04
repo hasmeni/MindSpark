@@ -15,9 +15,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 <script>
-  // Apply the saved interface scale immediately (before paint) to avoid a flash.
-  try{ var _s=parseFloat(localStorage.getItem('mindspark:uiScale'));
-    if(_s && _s>=0.5 && _s<=2 && _s!==1) document.documentElement.style.zoom=String(_s); }catch(e){}
+  // Apply the interface scale immediately (before paint) to avoid a flash.
+  // Uses the saved choice if any, otherwise an auto default based on width.
+  try{
+    var _s=parseFloat(localStorage.getItem('mindspark:uiScale'));
+    if(!(_s && _s>=0.5 && _s<=2)){
+      var _w=window.innerWidth||document.documentElement.clientWidth||1280;
+      _s = _w<760 ? 1 : _w<1000 ? 0.8 : _w<1300 ? 0.9 : 1;
+    }
+    if(_s && _s!==1) document.documentElement.style.zoom=String(_s);
+  }catch(e){}
 </script>
 </head>
 <body>
