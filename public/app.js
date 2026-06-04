@@ -180,6 +180,13 @@ const PALETTE=['#e0613a','#2f6f6a','#c98a1a','#5a7d3a','#3a6ea5','#9b4f96','#8a8
 /* ---------- app state ---------- */
 let map=null;                 // current map {id,title,color,rootId,nodes:{}}
 let view={x:80,y:0,k:1};      // pan/zoom
+let userZoom=null;            // user-chosen camera zoom, preserved across map switches
+// The whole UI may be scaled by CSS `zoom` (display size). getBoundingClientRect
+// then returns VISUAL px, but the #viewport transform works in LAYOUT px — so
+// convert by dividing by the active UI zoom for any camera math.
+function _uiZ(){ const z=parseFloat(document.documentElement.style.zoom); return (z && z>0) ? z : 1; }
+function _stageSize(){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {w:r.width/z, h:r.height/z}; }
+function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {x:(cx-r.left)/z, y:(cy-r.top)/z}; }
 let sel=null;                 // selected node id
 let history=[],hpos=-1;       // undo stack
 let saveTimer=null;
@@ -2003,10 +2010,10 @@ window.addEventListener('touchmove', e=>{
     const a=e.touches[0], b=e.touches[1];
     const d=Math.hypot(b.clientX-a.clientX, b.clientY-a.clientY);
     const k=Math.min(3, Math.max(0.1, pinch.k0 * (d/pinch.d0)));
-    const r=stage.getBoundingClientRect();
-    const px=pinch.cx-r.left, py=pinch.cy-r.top;
+    const p=_stagePoint(pinch.cx, pinch.cy);
+    const px=p.x, py=p.y;
     const old=view.k;
-    view.x = px-(px-view.x)*(k/old); view.y = py-(py-view.y)*(k/old); view.k = k;
+    view.x = px-(px-view.x)*(k/old); view.y = py-(py-view.y)*(k/old); view.k = k; userZoom=k;
     applyView();
     e.preventDefault(); return;
   }
@@ -2053,20 +2060,20 @@ stage.addEventListener('touchend', e=>{
 
 stage.addEventListener('wheel',e=>{
   e.preventDefault();
-  const r=stage.getBoundingClientRect();
-  const px=e.clientX-r.left, py=e.clientY-r.top;
+  const p=_stagePoint(e.clientX, e.clientY);
+  const px=p.x, py=p.y;
   const old=view.k;
   const k=Math.min(3,Math.max(.1, view.k*(e.deltaY<0?1.12:.89)));
-  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k;
+  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k;
   applyView();
 },{passive:false});
 
-function zoom(f){ const r=stage.getBoundingClientRect();const px=r.width/2,py=r.height/2;const old=view.k;
-  const k=Math.min(3,Math.max(.1,view.k*f));view.x=px-(px-view.x)*(k/old);view.y=py-(py-view.y)*(k/old);view.k=k;applyView();}
+function zoom(f){ const {w,h}=_stageSize();const px=w/2,py=h/2;const old=view.k;
+  const k=Math.min(3,Math.max(.1,view.k*f));view.x=px-(px-view.x)*(k/old);view.y=py-(py-view.y)*(k/old);view.k=k;userZoom=k;applyView();}
 function setZoom(percent){
-  const r=stage.getBoundingClientRect();const px=r.width/2,py=r.height/2;const old=view.k;
+  const {w,h}=_stageSize();const px=w/2,py=h/2;const old=view.k;
   const k=Math.min(3,Math.max(.1, percent/100));
-  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; applyView();
+  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k; applyView();
 }
 function fit(){
   if(!map)return;
@@ -2075,18 +2082,18 @@ function fit(){
   for(const id in map.nodes){ if(hidden.has(id))continue; const n=map.nodes[id];xs.push(n.x);ys.push(n.y);xe.push(n.x+(n.w||120));ye.push(n.y+(n.h||40)); }
   if(!xs.length)return;
   const minx=Math.min(...xs),miny=Math.min(...ys),maxx=Math.max(...xe),maxy=Math.max(...ye);
-  const r=stage.getBoundingClientRect();
+  const {w:SW,h:SH}=_stageSize();
   const cw=Math.max(1,maxx-minx), ch=Math.max(1,maxy-miny);
   // Scale the map's bounding box to fit the viewport with a margin. Cap at 100%
   // so a tiny map isn't magnified; this is what makes a big map auto-shrink to
   // fit a smaller screen instead of overflowing at full size.
   const margin=64;
-  const availW=Math.max(120, r.width  - margin*2);
-  const availH=Math.max(120, r.height - margin*2);
+  const availW=Math.max(120, SW - margin*2);
+  const availH=Math.max(120, SH - margin*2);
   const k=Math.max(0.1, Math.min(availW/cw, availH/ch, 1));
   view.k=k;
-  view.x=r.width/2  - (minx+cw/2)*k;
-  view.y=r.height/2 - (miny+ch/2)*k;
+  view.x=SW/2 - (minx+cw/2)*k;
+  view.y=SH/2 - (miny+ch/2)*k;
   applyView();
 }
 // Centre the map's bounding box in the current stage viewport WITHOUT changing
@@ -2103,10 +2110,10 @@ function recenter(){
     maxx=Math.max(maxx,n.x+(n.w||120)); maxy=Math.max(maxy,n.y+(n.h||40));
   }
   if(!isFinite(minx)) return;
-  const r=stage.getBoundingClientRect();
+  const {w:SW,h:SH}=_stageSize();
   const cx=(minx+maxx)/2, cy=(miny+maxy)/2;
-  view.x = r.width/2  - cx*view.k;
-  view.y = r.height/2 - cy*view.k;
+  view.x = SW/2 - cx*view.k;
+  view.y = SH/2 - cy*view.k;
   applyView();
 }
 
@@ -2330,9 +2337,9 @@ function replaceAll(){
 // Centre the viewport on a node (used by find-next)
 function centreOn(id){
   const n=map.nodes[id]; if(!n) return;
-  const r=stage.getBoundingClientRect();
-  view.x = r.width/2 - (n.x + (n.w||120)/2)*view.k;
-  view.y = r.height/2 - (n.y + (n.h||40)/2)*view.k;
+  const {w:SW,h:SH}=_stageSize();
+  view.x = SW/2 - (n.x + (n.w||120)/2)*view.k;
+  view.y = SH/2 - (n.y + (n.h||40)/2)*view.k;
   applyView();
 }
 
@@ -2382,12 +2389,13 @@ function updateMinimapViewport(){
 function minimapJump(clientX, clientY){
   const mm=$('#minimap'); if(!mm||!mm._t) return;
   const rect=mm.getBoundingClientRect();
+  const z=_uiZ();
   const {minx,miny,scale,ox,oy}=mm._t;
-  const wx=minx+((clientX-rect.left)-ox)/scale;
-  const wy=miny+((clientY-rect.top)-oy)/scale;
-  const r=stage.getBoundingClientRect();
-  view.x=r.width/2 - wx*view.k;
-  view.y=r.height/2 - wy*view.k;
+  const wx=minx+(((clientX-rect.left)/z)-ox)/scale;
+  const wy=miny+(((clientY-rect.top)/z)-oy)/scale;
+  const {w:SW,h:SH}=_stageSize();
+  view.x=SW/2 - wx*view.k;
+  view.y=SH/2 - wy*view.k;
   applyView();
 }
 
@@ -3503,7 +3511,12 @@ async function loadMap(id){
   history=[JSON.stringify({nodes:map.nodes,rootId:map.rootId,title:map.title,color:map.color})];
   hpos=0; updateUndo();
   $('#mapTitle').value=map.title;
-  render(); fit(); refreshList();   // render directly (autoLayout would save)
+  render();
+  // Preserve the user's chosen zoom across map switches; only auto-fit when the
+  // user hasn't set a zoom yet this session.
+  if(userZoom!=null){ view.k=userZoom; recenter(); }
+  else fit();
+  refreshList();
   return true;
 }
 
@@ -4454,9 +4467,17 @@ if(window.matchMedia('(max-width: 720px)').matches){
 $('#hintClose').onclick=()=>$('#hint').style.display='none';
 
 /* ---------- UI scale (whole-interface zoom, persisted) ---------- */
+// Default scale by viewport size when the user hasn't chosen one (first load):
+//   ≤ 1265×570  → 80%      ·   ≥ 2545×1305 → 100%   ·   in between → 85%
+function autoScaleForViewport(w,h){
+  if(w<=1265 || h<=570) return 0.8;
+  if(w>=2545 && h>=1305) return 1.0;
+  return 0.85;
+}
 function getUiScale(){
   const v=parseFloat(localStorage.getItem('mindspark:uiScale'));
-  return (v && v>=0.5 && v<=2) ? v : 1;
+  if(v && v>=0.5 && v<=2) return v;                                   // explicit choice
+  return autoScaleForViewport(window.innerWidth, window.innerHeight);  // first-load default
 }
 function applyUiScale(v){
   // CSS `zoom` on the root scales the entire UI uniformly — chrome and canvas —

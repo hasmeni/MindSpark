@@ -785,7 +785,7 @@
 
   /* ===== Token-count badge (bottom-right of node) ===== */
   .node .token-badge{
-    position:absolute; bottom:-9px; right:-6px;
+    position:absolute; bottom:-9px; left:-6px;
     padding:1px 7px; border-radius:9px;
     background:var(--toolbar-bg); color:var(--toolbar-text);
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -1022,7 +1022,7 @@
   .node .task-check.task-done{background:#4a9d5b; border-color:#4a9d5b; color:#fff}
   .node.task-done .node-text{text-decoration:line-through; opacity:.62}
   .node .task-progress{
-    position:absolute; bottom:-9px; left:-6px;
+    position:absolute; top:-9px; left:-6px;
     padding:1px 7px; border-radius:9px;
     background:var(--toolbar-bg); color:var(--toolbar-text);
     font-size:10px; font-weight:700; line-height:1.4;
