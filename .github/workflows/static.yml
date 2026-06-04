@@ -37,9 +37,9 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload entire repository
-          path: '.'     
-      - name: Run server 
-        run: node server.js
+          path: '.' 
+      - name: Docker Setup Docker
+        uses: docker/setup-docker-action@v5.2.0
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
