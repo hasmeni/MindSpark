@@ -383,9 +383,14 @@ function render(){
       el.appendChild(tb);
     }
     viewport.appendChild(el);
-    // measure & store size for layout/edges
+    // measure & store size for layout/edges — getBoundingClientRect returns
+    // VISUAL px, scaled by BOTH the canvas zoom (view.k) and the UI display
+    // zoom, so divide by both to get true layout dimensions. (Otherwise a
+    // reduced display size makes nodes measure too small → cramped layout and
+    // the style bar sitting on top of the node.)
     const r=el.getBoundingClientRect();
-    n.w=r.width/view.k; n.h=r.height/view.k;
+    const sz=view.k*_uiZ();
+    n.w=r.width/sz; n.h=r.height/sz;
   }
   drawEdges(hidden);
   positionNodeBar();
@@ -1944,7 +1949,8 @@ stage.addEventListener('mousedown',e=>{
 });
 window.addEventListener('mousemove',e=>{
   if(resizing){
-    const dx=(e.clientX-resizing.sx)/view.k, dy=(e.clientY-resizing.sy)/view.k;
+    const sc=view.k*_uiZ();
+    const dx=(e.clientX-resizing.sx)/sc, dy=(e.clientY-resizing.sy)/sc;
     const n=map.nodes[resizing.id];
     n.width=Math.max(60, Math.round(resizing.sw+dx));
     n.height=Math.max(30, Math.round(resizing.sh+dy));
@@ -1953,7 +1959,8 @@ window.addEventListener('mousemove',e=>{
     drawEdges(hiddenSet());
     positionNodeBar();
   } else if(dragNode){
-    const dx=(e.clientX-dragStart.mx)/view.k, dy=(e.clientY-dragStart.my)/view.k;
+    const sc=view.k*_uiZ();
+    const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
     applySubtreeDelta(dragStart, dx, dy);
     drawEdges(hiddenSet());
@@ -1961,7 +1968,8 @@ window.addEventListener('mousemove',e=>{
     // Detect a drop target under the cursor (only after a real drag has started)
     if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
   } else if(panning){
-    view.x=panStart.vx+(e.clientX-panStart.x); view.y=panStart.vy+(e.clientY-panStart.y);
+    const z=_uiZ();
+    view.x=panStart.vx+(e.clientX-panStart.x)/z; view.y=panStart.vy+(e.clientY-panStart.y)/z;
     applyView();
   }
 });
@@ -2041,7 +2049,8 @@ window.addEventListener('touchmove', e=>{
   if(e.touches.length!==1) return;
   const t=e.touches[0];
   if(dragNode){
-    const dx=(t.clientX-dragStart.mx)/view.k, dy=(t.clientY-dragStart.my)/view.k;
+    const sc=view.k*_uiZ();
+    const dx=(t.clientX-dragStart.mx)/sc, dy=(t.clientY-dragStart.my)/sc;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
     applySubtreeDelta(dragStart, dx, dy);
     drawEdges(hiddenSet());
@@ -2049,7 +2058,8 @@ window.addEventListener('touchmove', e=>{
     if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(t.clientX, t.clientY));
     e.preventDefault();
   } else if(panning){
-    view.x=panStart.vx+(t.clientX-panStart.x); view.y=panStart.vy+(t.clientY-panStart.y);
+    const z=_uiZ();
+    view.x=panStart.vx+(t.clientX-panStart.x)/z; view.y=panStart.vy+(t.clientY-panStart.y)/z;
     applyView();
     e.preventDefault();
   }
