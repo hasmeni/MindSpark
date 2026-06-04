@@ -821,6 +821,19 @@ function resolveResizeCollisions(resizedId){
   render();
 }
 
+// Assign root children to left/right by subtree weight for a balanced split.
+// Used when first building a map (templates) or when explicitly re-balancing;
+// stable autoLayout then preserves the assignment.
+function balanceRootSides(){
+  if(!map) return;
+  const kids=childrenOf(map.rootId);
+  const weights=kids.map(k=>({k,w:countDesc(k)+1}));
+  let L=0,R=0;
+  weights.sort((a,b)=>b.w-a.w).forEach(o=>{
+    if(R<=L){ map.nodes[o.k].side='right'; R+=o.w; }
+    else { map.nodes[o.k].side='left'; L+=o.w; }
+  });
+}
 function autoLayout(){
   if(!map) return;
   // ensure sizes
@@ -924,7 +937,7 @@ function pushHistory(){
   scheduleSave();                              // any change to history persists
 }
 function updateUndo(){ $('#undo').disabled=hpos<=0; $('#redo').disabled=hpos>=history.length-1; }
-function restore(s){ const o=JSON.parse(s); map.nodes=o.nodes; map.rootId=o.rootId; map.title=o.title; map.color=o.color; $('#mapTitle').value=map.title; render(); scheduleSave(); }
+function restore(s){ const o=JSON.parse(s); map.nodes=o.nodes; map.rootId=o.rootId; map.title=o.title; map.color=o.color; $('#mapTitle').value=map.title; autoLayout(); }
 function undo(){ if(hpos>0){hpos--;restore(history[hpos]);updateUndo();} }
 function redo(){ if(hpos<history.length-1){hpos++;restore(history[hpos]);updateUndo();} }
 
@@ -992,7 +1005,9 @@ function deleteNode(id){
   const parent=map.nodes[id].parent;
   rm.forEach(r=>delete map.nodes[r]);
   pruneLinks(rm);
-  pushHistory(); sel=parent; autoLayout();
+  sel=parent;
+  autoLayout();      // re-tidy first…
+  pushHistory();     // …then snapshot the clean, balanced state
 }
 function select(id,edit){
   // Toggle .sel class on existing elements rather than re-rendering — so the
@@ -2061,10 +2076,17 @@ function fit(){
   if(!xs.length)return;
   const minx=Math.min(...xs),miny=Math.min(...ys),maxx=Math.max(...xe),maxy=Math.max(...ye);
   const r=stage.getBoundingClientRect();
-  // Snap to 100% and centre the content's bounding box
-  view.k=1;
-  view.x=(r.width  - (maxx-minx))/2 - minx;
-  view.y=(r.height - (maxy-miny))/2 - miny;
+  const cw=Math.max(1,maxx-minx), ch=Math.max(1,maxy-miny);
+  // Scale the map's bounding box to fit the viewport with a margin. Cap at 100%
+  // so a tiny map isn't magnified; this is what makes a big map auto-shrink to
+  // fit a smaller screen instead of overflowing at full size.
+  const margin=64;
+  const availW=Math.max(120, r.width  - margin*2);
+  const availH=Math.max(120, r.height - margin*2);
+  const k=Math.max(0.1, Math.min(availW/cw, availH/ch, 1));
+  view.k=k;
+  view.x=r.width/2  - (minx+cw/2)*k;
+  view.y=r.height/2 - (miny+ch/2)*k;
   applyView();
 }
 // Centre the map's bounding box in the current stage viewport WITHOUT changing
@@ -3273,12 +3295,15 @@ async function createMapFromTemplate(templateId){
       text: n.text,
       parent: n.parent ? keyToId[n.parent] : null,
       x: 0, y: 0,
-      side: n.parent ? 'right' : 'root',
-      color: n.parent ? '#fff' : '#fff'
+      side: n.parent ? null : 'root',   // unsided → balanced by weight below
+      color: '#fff'
     };
+    if(n.task) nodes[nid].task = n.task;   // carry task state from user templates
   });
-  map = { id, title: tpl.name, titleAuto: false, color: tpl.color, rootId, nodes };
-  sel = rootId; history = []; hpos = -1; pushHistory();
+  map = { id, title: tpl.name, titleAuto: false, color: tpl.color, layout: 'balanced', rootId, nodes };
+  sel = rootId; history = []; hpos = -1;
+  balanceRootSides();        // split top-level branches evenly left/right
+  pushHistory();
   $('#mapTitle').value = map.title;
   autoLayout(); fit();
   scheduleSave(); refreshList();
@@ -4428,6 +4453,23 @@ if(window.matchMedia('(max-width: 720px)').matches){
 }
 $('#hintClose').onclick=()=>$('#hint').style.display='none';
 
+/* ---------- UI scale (whole-interface zoom, persisted) ---------- */
+function getUiScale(){
+  const v=parseFloat(localStorage.getItem('mindspark:uiScale'));
+  return (v && v>=0.5 && v<=2) ? v : 1;
+}
+function applyUiScale(v){
+  // CSS `zoom` on the root scales the entire UI uniformly — chrome and canvas —
+  // like browser zoom, while keeping pointer/geometry math self-consistent.
+  document.documentElement.style.zoom = (v && v!==1) ? String(v) : '';
+}
+function setUiScale(v){
+  v = Math.min(2, Math.max(0.5, v||1));
+  try{ localStorage.setItem('mindspark:uiScale', String(v)); }catch(e){}
+  applyUiScale(v);
+  toast('Interface scale: '+Math.round(v*100)+'%');
+}
+
 /* ---------- Themes ---------- */
 const THEMES = [
   {id:'light',           name:'Light',           swatch:['#f4efe6','#ffffff','#e0613a']},
@@ -4555,6 +4597,13 @@ $('#themeBtn').onclick=(e)=>{
             ${buildLayoutThumb(l.id)}<span class="theme-name">${l.name}</span>
           </button>`).join('')}
       </div>
+    </div>
+    <div class="tp-section">
+      <div class="tp-label">Display size <span class="tp-hint">scales the whole interface</span></div>
+      <div class="tp-scale">
+        ${[80,90,100,110,125].map(p=>`
+          <button class="scale-opt${p===getUiScale()*100?' active':''}" data-scale="${p}">${p}%</button>`).join('')}
+      </div>
     </div>`;
   const r=$('#themeBtn').getBoundingClientRect();
   themePanel.style.position='fixed';
@@ -4572,6 +4621,14 @@ $('#themeBtn').onclick=(e)=>{
       // Update active state within the same section
       const sec=opt.closest('.tp-section');
       sec.querySelectorAll('.theme-opt').forEach(o=>o.classList.remove('active'));
+      opt.classList.add('active');
+    };
+  });
+  themePanel.querySelectorAll('.scale-opt').forEach(opt=>{
+    opt.onclick=ev=>{
+      ev.stopPropagation();
+      setUiScale(parseInt(opt.dataset.scale,10)/100);
+      themePanel.querySelectorAll('.scale-opt').forEach(o=>o.classList.remove('active'));
       opt.classList.add('active');
     };
   });
