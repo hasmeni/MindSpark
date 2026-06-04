@@ -187,6 +187,18 @@ let userZoom=null;            // user-chosen camera zoom, preserved across map s
 function _uiZ(){ const z=parseFloat(document.documentElement.style.zoom); return (z && z>0) ? z : 1; }
 function _stageSize(){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {w:r.width/z, h:r.height/z}; }
 function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {x:(cx-r.left)/z, y:(cy-r.top)/z}; }
+// Per-map camera (zoom + pan), saved in localStorage so each map reopens exactly
+// where the user left it. Kept out of the map object so it never bumps the map's
+// "updated" time or reshuffles the sidebar.
+function saveMapView(){
+  if(!map || !map.id || READONLY) return;
+  try{ localStorage.setItem('mindspark:view:'+map.id, JSON.stringify({k:view.k, x:view.x, y:view.y})); }catch(e){}
+}
+function loadMapView(id){
+  try{ const v=JSON.parse(localStorage.getItem('mindspark:view:'+id)||'null');
+    if(v && isFinite(v.k) && isFinite(v.x) && isFinite(v.y)) return v; }catch(e){}
+  return null;
+}
 let sel=null;                 // selected node id
 let history=[],hpos=-1;       // undo stack
 let saveTimer=null;
@@ -199,9 +211,16 @@ const viewport=$('#viewport'), edges=$('#edges'), stage=$('#stage');
 function applyView(){
   viewport.style.transform=`translate(${view.x}px,${view.y}px) scale(${view.k})`;
   $('#zoomVal').textContent=Math.round(view.k*100)+'%';
-  // Keep the (in-viewport) node toolbar at constant screen size as zoom changes
+  // Keep the (in-viewport) node toolbar at a constant on-screen size AND a
+  // constant ~12px gap below the node as zoom changes (so it never overlaps).
   const bar=$('#nodebar');
-  if(bar) bar.style.transform=`translateX(-50%) scale(${1/view.k})`;
+  if(bar){
+    if(sel && map && map.nodes[sel]){
+      const n=map.nodes[sel];
+      bar.style.top=(n.y+(n.h||40)+12/view.k)+'px';
+    }
+    bar.style.transform=`translateX(-50%) scale(${1/view.k})`;
+  }
   updateMinimapViewport();
 }
 function clearNodes(){ document.querySelectorAll('.node').forEach(n=>n.remove()); }
@@ -1644,7 +1663,9 @@ function positionNodeBar(){
 
   const bar=document.createElement('div'); bar.className='nodebar'; bar.id='nodebar';
   bar.style.left=(n.x+(n.w||0)/2)+'px';
-  bar.style.top=(n.y+(n.h||40)+10)+'px';
+  // Constant ~12px on-screen gap below the node regardless of canvas zoom, so
+  // the bar never overlaps the node (a world-space gap would shrink when zoomed out).
+  bar.style.top=(n.y+(n.h||40)+12/view.k)+'px';
   bar.style.transformOrigin='top center';
   // The bar lives inside the zoomable viewport, so counter-scale it by 1/zoom
   // to keep it a constant on-screen size no matter how far the map is zoomed.
@@ -1963,7 +1984,7 @@ window.addEventListener('mouseup',()=>{
     setDropTarget(null);
     dragNode=null;
   }
-  panning=false;
+  if(panning){ panning=false; saveMapView(); }
 });
 
 /* ============================================================
@@ -2014,7 +2035,7 @@ window.addEventListener('touchmove', e=>{
     const px=p.x, py=p.y;
     const old=view.k;
     view.x = px-(px-view.x)*(k/old); view.y = py-(py-view.y)*(k/old); view.k = k; userZoom=k;
-    applyView();
+    applyView(); saveMapView();
     e.preventDefault(); return;
   }
   if(e.touches.length!==1) return;
@@ -2044,7 +2065,7 @@ window.addEventListener('touchend', e=>{
     setDropTarget(null);
     dragNode=null;
   }
-  panning=false;
+  if(panning){ panning=false; saveMapView(); }
 });
 
 // Double-tap to edit (since dblclick doesn't fire reliably on touch)
@@ -2065,15 +2086,15 @@ stage.addEventListener('wheel',e=>{
   const old=view.k;
   const k=Math.min(3,Math.max(.1, view.k*(e.deltaY<0?1.12:.89)));
   view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k;
-  applyView();
+  applyView(); saveMapView();
 },{passive:false});
 
 function zoom(f){ const {w,h}=_stageSize();const px=w/2,py=h/2;const old=view.k;
-  const k=Math.min(3,Math.max(.1,view.k*f));view.x=px-(px-view.x)*(k/old);view.y=py-(py-view.y)*(k/old);view.k=k;userZoom=k;applyView();}
+  const k=Math.min(3,Math.max(.1,view.k*f));view.x=px-(px-view.x)*(k/old);view.y=py-(py-view.y)*(k/old);view.k=k;userZoom=k;applyView();saveMapView();}
 function setZoom(percent){
   const {w,h}=_stageSize();const px=w/2,py=h/2;const old=view.k;
   const k=Math.min(3,Math.max(.1, percent/100));
-  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k; applyView();
+  view.x=px-(px-view.x)*(k/old); view.y=py-(py-view.y)*(k/old); view.k=k; userZoom=k; applyView(); saveMapView();
 }
 function fit(){
   if(!map)return;
@@ -3512,9 +3533,11 @@ async function loadMap(id){
   hpos=0; updateUndo();
   $('#mapTitle').value=map.title;
   render();
-  // Preserve the user's chosen zoom across map switches; only auto-fit when the
-  // user hasn't set a zoom yet this session.
-  if(userZoom!=null){ view.k=userZoom; recenter(); }
+  // Restore this map's saved camera if it has one; otherwise preserve the
+  // session zoom across switches; otherwise auto-fit a fresh map.
+  const saved=loadMapView(map.id);
+  if(saved){ view.k=saved.k; view.x=saved.x; view.y=saved.y; applyView(); }
+  else if(userZoom!=null){ view.k=userZoom; recenter(); }
   else fit();
   refreshList();
   return true;
@@ -4422,7 +4445,8 @@ $('#collapseAll')?.addEventListener('click', ()=>{
   toast(anyExpanded ? 'Collapsed all branches' : 'Expanded all branches');
 });
 $('#undo').onclick=undo; $('#redo').onclick=redo;
-$('#zoomIn').onclick=()=>zoom(1.15); $('#zoomOut').onclick=()=>zoom(.87); $('#zoomFit').onclick=fit;
+$('#zoomIn').onclick=()=>zoom(1.15); $('#zoomOut').onclick=()=>zoom(.87);
+$('#zoomFit').onclick=()=>{ fit(); userZoom=view.k; saveMapView(); };
 $('#minimap')?.addEventListener('mousedown', e=>{ e.stopPropagation(); minimapJump(e.clientX, e.clientY); });
 $('#minimap')?.addEventListener('click', e=>e.stopPropagation());
 // Click the zoom % to enter a custom value
@@ -4468,11 +4492,11 @@ $('#hintClose').onclick=()=>$('#hint').style.display='none';
 
 /* ---------- UI scale (whole-interface zoom, persisted) ---------- */
 // Default scale by viewport size when the user hasn't chosen one (first load):
-//   ≤ 1265×570  → 80%      ·   ≥ 2545×1305 → 100%   ·   in between → 85%
+//   ≤ 1265×570  → 80%      ·   ≥ 2545×1305 → 100%   ·   in between → 90%
 function autoScaleForViewport(w,h){
   if(w<=1265 || h<=570) return 0.8;
   if(w>=2545 && h>=1305) return 1.0;
-  return 0.85;
+  return 0.9;
 }
 function getUiScale(){
   const v=parseFloat(localStorage.getItem('mindspark:uiScale'));
@@ -4628,7 +4652,7 @@ $('#themeBtn').onclick=(e)=>{
       <div class="tp-label">Display size <span class="tp-hint">scales the whole interface</span></div>
       <div class="tp-scale">
         ${[80,90,100,110,125].map(p=>`
-          <button class="scale-opt${p===getUiScale()*100?' active':''}" data-scale="${p}">${p}%</button>`).join('')}
+          <button class="scale-opt${p===Math.round(getUiScale()*100)?' active':''}" data-scale="${p}">${p}%</button>`).join('')}
       </div>
     </div>`;
   const r=$('#themeBtn').getBoundingClientRect();
