@@ -16,7 +16,10 @@ const ServerStore = {
     try{ await this._j('/api/maps/'+map.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(map)}); }
     catch(e){ await this._j('/api/maps',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(map)}); }
   },
-  async remove(id){ try{ await this._j('/api/maps/'+id,{method:'DELETE'}); }catch(e){} }
+  async remove(id){ try{ await this._j('/api/maps/'+id,{method:'DELETE'}); }catch(e){} },
+  // Version history (SQLite-backed snapshots)
+  async history(id){ try{ return await this._j('/api/maps/'+id+'/versions'); }catch(e){ return []; } },
+  async version(id, ref){ try{ return await this._j('/api/maps/'+id+'/versions/'+ref); }catch(e){ return null; } }
 };
 
 const CloudStore = {
@@ -147,6 +150,27 @@ const CloudStore = {
     delete this.shas[id];
     this.index=this.index.filter(m=>m.id!==id);
     await this._saveIndex();
+  },
+  // Version history = the GitHub commit history of the map's JSON file.
+  async history(id){
+    try{
+      const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/commits?path=maps/${id}.json&per_page=50`,{headers:this._headers()});
+      if(!r.ok) return [];
+      const commits=await r.json();
+      return commits.map(c=>({
+        ref: c.sha,
+        ts: Date.parse(c.commit?.author?.date || c.commit?.committer?.date || 0) || 0,
+        message: c.commit?.message || ''
+      }));
+    }catch(e){ console.warn('history', e); return []; }
+  },
+  async version(id, ref){
+    try{
+      const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/maps/${id}.json?ref=${encodeURIComponent(ref)}`,{headers:this._headers()});
+      if(!r.ok) return null;
+      const data=await r.json();
+      return JSON.parse(this._decode(data.content));
+    }catch(e){ console.warn('version', e); return null; }
   }
 };
 
@@ -184,7 +208,19 @@ let userZoom=null;            // user-chosen camera zoom, preserved across map s
 // The whole UI may be scaled by CSS `zoom` (display size). getBoundingClientRect
 // then returns VISUAL px, but the #viewport transform works in LAYOUT px — so
 // convert by dividing by the active UI zoom for any camera math.
-function _uiZ(){ const z=parseFloat(document.documentElement.style.zoom); return (z && z>0) ? z : 1; }
+// The whole UI may be scaled by CSS `zoom` (display size). Under CSS `zoom`,
+// modern browsers report getBoundingClientRect()/clientX in zoom-scaled "visual"
+// pixels, while the #viewport transform works in layout pixels — so camera math
+// divides rect/pointer coords by the active zoom. We read the applied zoom
+// directly (set by the pre-paint head script and by applyUiScale): deterministic
+// and not dependent on a probe element being laid out at the right moment.
+function _uiZ(){
+  const z = parseFloat(document.documentElement.style.zoom);
+  return (z && z > 0) ? z : 1;
+}
+function _invalidateZoom(){ /* no-op: _uiZ reads live state, nothing to cache */ }
+window.addEventListener('resize', _invalidateZoom);
+window.addEventListener('load', _invalidateZoom);
 function _stageSize(){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {w:r.width/z, h:r.height/z}; }
 function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {x:(cx-r.left)/z, y:(cy-r.top)/z}; }
 // Per-map camera (zoom + pan), saved in localStorage so each map reopens exactly
@@ -1349,6 +1385,10 @@ function showCitationForm(id){
       <button class="vf-close" aria-label="Close">×</button>
       <h2>Reference / citation</h2>
       <p class="vf-sub">Fill the fields, or paste a full citation into "Authors". The node will show the formatted reference and be included in <b>Export → References</b>.</p>
+      <div class="vf-doi-lookup">
+        <input class="vf-doi-in" placeholder="Paste a DOI to autofill (e.g. 10.1109/TIM.2026.3659640)">
+        <button class="vf-doi-go">Fetch</button>
+      </div>
       <div class="vf-fields">
         <label class="vf-row"><span class="vf-name">Authors</span><textarea class="vf-input" data-f="authors" rows="1" placeholder="Smith, J. & Doe, A.">${escapeHtml(c.authors||'')}</textarea></label>
         <label class="vf-row"><span class="vf-name">Title</span><textarea class="vf-input" data-f="title" rows="1" placeholder="A study of …">${escapeHtml(c.title||'')}</textarea></label>
@@ -1367,6 +1407,33 @@ function showCitationForm(id){
   m.querySelectorAll('.vf-input').forEach(ta=>{ const g=()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,120)+'px';}; ta.addEventListener('input',g); g(); });
   m.querySelector('.vf-input')?.focus();
   const close=()=>m.remove();
+  // DOI → Crossref autofill
+  const doiGo=m.querySelector('.vf-doi-go'), doiIn=m.querySelector('.vf-doi-in');
+  const setField=(f,val)=>{ const ta=m.querySelector(`.vf-input[data-f="${f}"]`); if(ta && val){ ta.value=val; ta.dispatchEvent(new Event('input')); } };
+  const fetchDoi=async()=>{
+    let doi=(doiIn.value||'').trim();
+    if(!doi){ toast('Paste a DOI first'); return; }
+    doi=doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i,'').replace(/^doi:/i,'').trim();
+    doiGo.disabled=true; const old=doiGo.textContent; doiGo.textContent='…';
+    try{
+      const r=await fetch('https://api.crossref.org/works/'+encodeURIComponent(doi),{headers:{'Accept':'application/json'}});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      const msg=(await r.json()).message||{};
+      const authors=(msg.author||[]).map(a=>[a.family,a.given].filter(Boolean).join(', ')).join('; ');
+      const title=Array.isArray(msg.title)?msg.title[0]:msg.title;
+      const yr=(msg.issued&&msg.issued['date-parts']&&msg.issued['date-parts'][0]&&msg.issued['date-parts'][0][0]);
+      const source=Array.isArray(msg['container-title'])?msg['container-title'][0]:(msg['container-title']||msg.publisher);
+      if(authors) setField('authors',authors);
+      if(title) setField('title',title);
+      if(yr) setField('year',String(yr));
+      if(source) setField('source',source);
+      setField('doi', msg.DOI ? 'https://doi.org/'+msg.DOI : doi);
+      toast('Citation autofilled');
+    }catch(e){ toast('DOI lookup failed — check the DOI or fill manually'); }
+    finally{ doiGo.disabled=false; doiGo.textContent=old; }
+  };
+  doiGo.onclick=fetchDoi;
+  doiIn.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); fetchDoi(); } });
   m.querySelector('.vf-go').onclick=()=>{
     const cit={}; m.querySelectorAll('.vf-input').forEach(ta=>{ if(ta.value.trim()) cit[ta.dataset.f]=ta.value.trim(); });
     n.citation=cit; n.ref=true;
@@ -2134,6 +2201,10 @@ function fit(){
   if(!xs.length)return;
   const minx=Math.min(...xs),miny=Math.min(...ys),maxx=Math.max(...xe),maxy=Math.max(...ye);
   const {w:SW,h:SH}=_stageSize();
+  // If the stage hasn't been laid out yet (e.g. fit() called during initial boot
+  // before first paint), bail rather than computing a view that throws the map
+  // off-screen — the caller should re-fit once layout settles.
+  if(!(SW>1) || !(SH>1)) return;
   const cw=Math.max(1,maxx-minx), ch=Math.max(1,maxy-miny);
   // Scale the map's bounding box to fit the viewport with a margin. Cap at 100%
   // so a tiny map isn't magnified; this is what makes a big map auto-shrink to
@@ -3314,7 +3385,87 @@ const TEMPLATES = {
       { k:'a', parent:'root', text:'Assessment' },
       { k:'p', parent:'root', text:'Plan' }
     ]
+  },
+
+  /* ===== Feature showcase — demonstrates colours, formatting, notes, tasks,
+     references, an image and cross-links. A friendly first map to explore. ===== */
+  ml_overview: {
+    name:'Machine Learning — overview', desc:'A guided demo map: concepts, notes, tasks, a reference, an image & cross-links', color:'#3a6ea5', group:'study', icon:'🤖',
+    nodes:[
+      { k:'root', text:'Machine Learning', fontSize:22,
+        notes:'<h2>How to use this map</h2><p>This is a <b>demo</b> showing what MindSpark can do. Try: double-click any node to edit, drag to rearrange, press <b>Tab</b> to add a child, and click the <b>📝</b>, <b>☑</b> and <b>📖</b> badges. The <i>neural network</i> branch has an image and cross-links.</p><ul><li>Bold / italic / lists</li><li>Notes, tasks & citations</li><li>Images & cross-links</li></ul>' },
+
+      /* ---- Supervised ---- */
+      { k:'sup', parent:'root', text:'Supervised learning', color:'#cfe0ee', bold:true },
+      { k:'reg', parent:'sup', text:'Regression — predict a <i>continuous</i> value' },
+      { k:'reg1', parent:'reg', text:'Linear regression' },
+      { k:'reg2', parent:'reg', text:'Example: house prices' },
+      { k:'cls', parent:'sup', text:'Classification — predict a <i>category</i>' },
+      { k:'cls1', parent:'cls', text:'Logistic regression' },
+      { k:'cls2', parent:'cls', text:'Decision trees & random forests' },
+      { k:'cls3', parent:'cls', text:'Support vector machines' },
+
+      /* ---- Unsupervised ---- */
+      { k:'uns', parent:'root', text:'Unsupervised learning', color:'#d8e6c8', bold:true },
+      { k:'clu', parent:'uns', text:'Clustering' },
+      { k:'clu1', parent:'clu', text:'k-Means' },
+      { k:'clu2', parent:'clu', text:'DBSCAN' },
+      { k:'dim', parent:'uns', text:'Dimensionality reduction' },
+      { k:'dim1', parent:'dim', text:'PCA' },
+      { k:'dim2', parent:'dim', text:'t-SNE / UMAP' },
+
+      /* ---- Reinforcement ---- */
+      { k:'rl', parent:'root', text:'Reinforcement learning', color:'#f0d9c4', bold:true },
+      { k:'rl1', parent:'rl', text:'Agent & environment' },
+      { k:'rl2', parent:'rl', text:'Reward signal', highlight:'#fff3a8' },
+      { k:'rl3', parent:'rl', text:'Q-learning' },
+
+      /* ---- Neural networks (concept branch) ---- */
+      { k:'nn', parent:'root', text:'Neural networks', color:'#e3d4f0', bold:true,
+        notes:'<p>A network of <b>neurons</b> arranged in layers. Each connection has a <i>weight</i> learned during training.</p>' },
+      { k:'neu', parent:'nn', text:'A <b>neuron</b>: weighted sum &rarr; <i>activation</i>' },
+      { k:'act', parent:'nn', text:'ReLU\nSigmoid\nTanh\nSoftmax', listType:'ul' },
+      { k:'lay', parent:'nn', text:'Layers' },
+      { k:'lay1', parent:'lay', text:'Input layer' },
+      { k:'lay2', parent:'lay', text:'Hidden layers' },
+      { k:'lay3', parent:'lay', text:'Output layer' },
+      { k:'arch', parent:'nn', text:'Architecture — a 3 &rarr; 2 &rarr; 1 net', image:'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+PHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxMjAiIHJ4PSIxMCIgZmlsbD0iI2Y0ZWZlNiIvPjxnIHN0cm9rZT0iI2M5YmZhZSIgc3Ryb2tlLXdpZHRoPSIxLjQiPjxsaW5lIHgxPSIzNCIgeTE9IjMwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjMwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjYwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjYwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjkwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjkwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSI5MCIgeTE9IjQwIiB4Mj0iMTQ2IiB5Mj0iNjAiLz48bGluZSB4MT0iOTAiIHkxPSI4MCIgeDI9IjE0NiIgeTI9IjYwIi8+PC9nPjxnPjxjaXJjbGUgY3g9IjM0IiBjeT0iMzAiIHI9IjEwIiBmaWxsPSIjNWI4ZGIyIi8+PGNpcmNsZSBjeD0iMzQiIGN5PSI2MCIgcj0iMTAiIGZpbGw9IiM1YjhkYjIiLz48Y2lyY2xlIGN4PSIzNCIgY3k9IjkwIiByPSIxMCIgZmlsbD0iIzViOGRiMiIvPjxjaXJjbGUgY3g9IjkwIiBjeT0iNDAiIHI9IjExIiBmaWxsPSIjNmE4YzNmIi8+PGNpcmNsZSBjeD0iOTAiIGN5PSI4MCIgcj0iMTEiIGZpbGw9IiM2YThjM2YiLz48Y2lyY2xlIGN4PSIxNDYiIGN5PSI2MCIgcj0iMTIiIGZpbGw9IiNlMDYxM2EiLz48L2c+PHRleHQgeD0iMzQiIHk9IjExMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzdhNzE2MyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+aW5wdXQ8L3RleHQ+PHRleHQgeD0iOTAiIHk9IjExMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzdhNzE2MyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+aGlkZGVuPC90ZXh0Pjx0ZXh0IHg9IjE0NiIgeT0iMTEyIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjN2E3MTYzIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5vdXRwdXQ8L3RleHQ+PC9zdmc+' },
+      { k:'trn', parent:'nn', text:'Training loop' },
+      { k:'trn1', parent:'trn', text:'Forward pass' },
+      { k:'trn2', parent:'trn', text:'Loss function' },
+      { k:'bp', parent:'trn', text:'<b>Backpropagation</b>',
+        notes:'<p>Propagate the error <i>backwards</i> with the chain rule to get gradients, then update weights with <b>gradient descent</b>.</p>' },
+      { k:'gd', parent:'trn', text:'Gradient descent' },
+
+      /* ---- Workflow ---- */
+      { k:'wf', parent:'root', text:'Typical workflow', color:'#c4e0dd', bold:true },
+      { k:'wf1', parent:'wf', text:'Load {{dataset}} & clean data' },
+      { k:'wf2', parent:'wf', text:'Train / test split' },
+      { k:'over', parent:'wf', text:'Overfitting', textColor:'#b8451f' },
+      { k:'regz', parent:'wf', text:'Regularization (L1 / L2, dropout)' },
+      { k:'eval', parent:'wf', text:'Evaluation' },
+      { k:'eval1', parent:'eval', text:'Accuracy / Precision / Recall / F1' },
+      { k:'eval2', parent:'eval', text:'Cross-validation' },
+
+      /* ---- Learning checklist (task states → progress roll-up) ---- */
+      { k:'chk', parent:'root', text:'Learning checklist', color:'#f0e3c4', bold:true },
+      { k:'chk1', parent:'chk', text:'Linear algebra basics', task:'done' },
+      { k:'chk2', parent:'chk', text:'Probability & statistics', task:'done' },
+      { k:'chk3', parent:'chk', text:'Build a classifier', task:'doing' },
+      { k:'chk4', parent:'chk', text:'Understand backprop math', task:'todo' },
+      { k:'chk5', parent:'chk', text:'Deploy a model', task:'todo' },
+
+      /* ---- Tools (bullet list) + reference ---- */
+      { k:'tool', parent:'root', text:'Python\nNumPy & Pandas\nscikit-learn\nPyTorch / TensorFlow', listType:'ul', color:'#dfe7ef' },
+      { k:'ref', parent:'root', text:'Goodfellow et&nbsp;al. — <i>Deep Learning</i>', ref:true,
+        citation:{ authors:'Goodfellow, I., Bengio, Y. & Courville, A.', title:'Deep Learning', year:'2016', source:'MIT Press', doi:'https://www.deeplearningbook.org' } }
+    ],
+    links:[
+      { from:'bp',  to:'gd'  },
+      { from:'over', to:'regz' }
+    ]
   }
+
 };
 // Template categories (ordered) for the drill-down menu.
 const TEMPLATE_CATEGORIES = [
@@ -3345,19 +3496,29 @@ async function createMapFromTemplate(templateId){
     keyToId[n.k] = nid;
     if(!n.parent) rootId = nid;
   });
+  // Optional per-node fields a template may set to showcase features.
+  const OPT = ['notes','image','ref','citation','fontSize','bold','italic',
+    'underline','strike','textColor','highlight','align','listType','collapsed','width','height'];
   tpl.nodes.forEach(n => {
     const nid = keyToId[n.k];
-    nodes[nid] = {
+    const node = {
       id: nid,
       text: n.text,
       parent: n.parent ? keyToId[n.parent] : null,
       x: 0, y: 0,
       side: n.parent ? null : 'root',   // unsided → balanced by weight below
-      color: '#fff'
+      color: n.color || '#fff'
     };
-    if(n.task) nodes[nid].task = n.task;   // carry task state from user templates
+    if(n.task) node.task = n.task;       // carry task state
+    OPT.forEach(f => { if(n[f] !== undefined) node[f] = n[f]; });
+    nodes[nid] = node;
   });
-  map = { id, title: tpl.name, titleAuto: false, color: tpl.color, layout: 'balanced', rootId, nodes };
+  // Cross-links (template keys → real ids), skipping any that don't resolve.
+  const links = Array.isArray(tpl.links)
+    ? tpl.links.filter(l => keyToId[l.from] && keyToId[l.to])
+               .map(l => ({ from: keyToId[l.from], to: keyToId[l.to] }))
+    : [];
+  map = { id, title: tpl.name, titleAuto: false, color: tpl.color, layout: 'balanced', rootId, nodes, links };
   sel = rootId; history = []; hpos = -1;
   balanceRootSides();        // split top-level branches evenly left/right
   pushHistory();
@@ -3607,6 +3768,9 @@ function exportMenu(){
   pop.className='export-pop';
   pop.innerHTML=`
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
+    <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
+    <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
+    <button data-a="buildprompt"><span class="ex-ic">✨</span><span><b>Build prompt from branch</b><i>Assemble a prompt — copy or run it</i></span></button>
     <div class="ex-div"></div>
     <button data-a="png"   ><span class="ex-ic">🖼</span><span><b>PNG image</b><i>Themed export, honors map style</i></span></button>
     <button data-a="prompt"><span class="ex-ic">⚡</span><span><b>Export as prompt</b><i>Fill variables, then copy clean text</i></span></button>
@@ -3634,6 +3798,9 @@ function exportMenu(){
   pop.querySelectorAll('button').forEach(b=>b.onclick=()=>{
     const a=b.dataset.a; close();
     if(a==='share') copyShareLink();
+    else if(a==='history') showVersionHistory();
+    else if(a==='present') startPresentation();
+    else if(a==='buildprompt') showBuildPrompt(sel || (map&&map.rootId));
     else if(a==='png') exportPNG();
     else if(a==='prompt') exportAsPrompt();
     else if(a==='md') exportMarkdown(false);
@@ -3647,6 +3814,301 @@ function exportMenu(){
     else if(a==='import') importJSON();
   });
 }
+
+/* ============================================================
+   Version history — browse and restore past saves of the current map.
+   Cloud mode: real GitHub commit history of the map's file.
+   Server mode: SQLite snapshots taken on each content change.
+   ============================================================ */
+let _historyPreview = null;   // {original} while previewing a past version
+function relTime(ts){
+  const s=Math.floor((Date.now()-ts)/1000);
+  if(s<60) return 'just now';
+  if(s<3600) return Math.floor(s/60)+' min ago';
+  if(s<86400) return Math.floor(s/3600)+' h ago';
+  const d=Math.floor(s/86400);
+  if(d<30) return d+' day'+(d===1?'':'s')+' ago';
+  return new Date(ts).toLocaleDateString();
+}
+async function showVersionHistory(){
+  if(!map){ toast('Open a map first'); return; }
+  if(typeof Store.history !== 'function'){ toast('History not available'); return; }
+  document.querySelectorAll('.hist-panel,.export-pop').forEach(p=>p.remove());
+  const panel=document.createElement('div');
+  panel.className='hist-panel';
+  panel.innerHTML=`<div class="hist-head"><b>Version history</b><button class="hist-x" title="Close">×</button></div>
+    <div class="hist-list"><div class="hist-status">Loading…</div></div>`;
+  document.body.appendChild(panel);
+  panel.addEventListener('mousedown',e=>e.stopPropagation());
+  panel.querySelector('.hist-x').onclick=()=>{ cancelHistoryPreview(); panel.remove(); };
+  const list=panel.querySelector('.hist-list');
+  const mapId=map.id;
+  let versions=[];
+  try{ versions=await Store.history(mapId); }catch(e){ versions=[]; }
+  if(!versions || !versions.length){
+    list.innerHTML=`<div class="hist-status">No earlier versions yet.<br><span class="hist-sub">Versions are recorded each time the map changes${MODE==='cloud'?' (your GitHub commit history)':''}. Make an edit, then check back.</span></div>`;
+    return;
+  }
+  list.innerHTML = versions.map((v,i)=>`
+    <div class="hist-row" data-ref="${escapeHtml(String(v.ref!=null?v.ref:v.ts))}">
+      <div class="hist-when"><b>${i===0?'Latest':relTime(v.ts)}</b><i>${new Date(v.ts).toLocaleString()}</i></div>
+      <div class="hist-actions">
+        <button class="hist-prev">Preview</button>
+        <button class="hist-restore${i===0?' disabled':''}"${i===0?' disabled':''}>Restore</button>
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('.hist-row').forEach(row=>{
+    const ref=row.dataset.ref;
+    row.querySelector('.hist-prev').onclick=()=>previewVersion(mapId, ref, row);
+    const rb=row.querySelector('.hist-restore');
+    if(rb && !rb.disabled) rb.onclick=()=>restoreVersion(mapId, ref);
+  });
+}
+async function previewVersion(mapId, ref, row){
+  const data=await Store.version(mapId, ref);
+  if(!data){ toast('Could not load that version'); return; }
+  if(!_historyPreview) _historyPreview={ original: JSON.parse(JSON.stringify(map)) };
+  map = normalizeLoadedMap(data);
+  render(); fit();
+  document.querySelectorAll('.hist-row').forEach(r=>r.classList.remove('active'));
+  row?.classList.add('active');
+  showPreviewBanner(mapId, ref);
+}
+function showPreviewBanner(mapId, ref){
+  document.querySelectorAll('.hist-banner').forEach(b=>b.remove());
+  const b=document.createElement('div');
+  b.className='hist-banner';
+  b.innerHTML=`<span>👁 Previewing an earlier version (read-only)</span>
+    <button class="hb-restore">Restore this version</button>
+    <button class="hb-cancel">Back to current</button>`;
+  document.body.appendChild(b);
+  b.querySelector('.hb-restore').onclick=()=>restoreVersion(mapId, ref);
+  b.querySelector('.hb-cancel').onclick=()=>{ cancelHistoryPreview(); };
+}
+function cancelHistoryPreview(){
+  document.querySelectorAll('.hist-banner').forEach(b=>b.remove());
+  if(_historyPreview){ map=_historyPreview.original; _historyPreview=null; render(); fit(); }
+}
+async function restoreVersion(mapId, ref){
+  const data=await Store.version(mapId, ref);
+  if(!data){ toast('Could not load that version'); return; }
+  const restored=normalizeLoadedMap(data);
+  restored.id=mapId;                 // keep identity
+  restored.updated=Date.now();
+  _historyPreview=null;
+  map=restored;
+  history=[]; hpos=-1; pushHistory();   // restored state becomes a fresh undo baseline
+  render(); fit();
+  try{ await Store.save(map); }catch(e){}
+  document.querySelectorAll('.hist-banner,.hist-panel').forEach(p=>p.remove());
+  refreshList();
+  toast('Version restored');
+}
+// Normalize a loaded/decoded map object to the current shape (defensive defaults).
+function normalizeLoadedMap(m){
+  return { id:m.id, title:m.title||'Untitled map', titleAuto:!!m.titleAuto, color:m.color||'#e0613a',
+           rootId:m.rootId, style:m.style, layout:m.layout||'balanced',
+           nodes:m.nodes||{}, links:m.links||[], vars:m.vars||{} };
+}
+
+/* ============================================================
+   Build prompt from branch — assemble the selected subtree into a clean,
+   structured prompt; copy it, or (optional, bring-your-own-key) run it
+   against an LLM API and drop the answer back as child nodes.
+   ============================================================ */
+function assemblePrompt(rootId){
+  if(!map || !map.nodes[rootId]) return '';
+  const lines=[];
+  const walk=(id, depth)=>{
+    const n=map.nodes[id]; if(!n) return;
+    const txt=nodeTextPlain(n.text||'').replace(/\n/g,' ').trim();
+    const indent='  '.repeat(depth);
+    if(depth===0){ lines.push(txt); }
+    else { lines.push(`${indent}- ${txt}`); }
+    const note=(n.notes||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
+    if(note) lines.push(`${indent}  (${note})`);
+    childrenOf(id).forEach(c=>walk(c, depth+1));
+  };
+  walk(rootId, 0);
+  // Substitute any {{variables}} the map already has values for.
+  let out=lines.join('\n');
+  const vars=map.vars||{};
+  out=out.replace(/\{\{(\w+)\}\}/g,(m,k)=> (vars[k]!=null && String(vars[k]).trim()!=='') ? vars[k] : m);
+  return out;
+}
+const LLM_PROVIDERS = {
+  anthropic: {
+    label:'Anthropic (Claude)', url:'https://api.anthropic.com/v1/messages',
+    defaultModel:'claude-3-5-sonnet-latest',
+    headers:(key)=>({'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'}),
+    body:(model,prompt)=>JSON.stringify({model, max_tokens:1024, messages:[{role:'user',content:prompt}]}),
+    extract:(d)=> (d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim()
+  },
+  openai: {
+    label:'OpenAI', url:'https://api.openai.com/v1/chat/completions',
+    defaultModel:'gpt-4o-mini',
+    headers:(key)=>({'content-type':'application/json','Authorization':'Bearer '+key}),
+    body:(model,prompt)=>JSON.stringify({model, messages:[{role:'user',content:prompt}]}),
+    extract:(d)=> (d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content||'').trim()
+  }
+};
+function showBuildPrompt(nodeId){
+  if(!map){ toast('Open a map first'); return; }
+  nodeId = nodeId && map.nodes[nodeId] ? nodeId : map.rootId;
+  document.querySelectorAll('.bp-panel,.export-pop').forEach(p=>p.remove());
+  const prompt=assemblePrompt(nodeId);
+  const provider=localStorage.getItem('mindspark:llm:provider')||'anthropic';
+  const model=localStorage.getItem('mindspark:llm:model:'+provider) || LLM_PROVIDERS[provider].defaultModel;
+  const tok=estimateTokens(prompt,'');
+  const panel=document.createElement('div');
+  panel.className='bp-panel';
+  panel.innerHTML=`
+    <div class="bp-head"><b>Build prompt from “${escapeHtml(nodeTextPlain(map.nodes[nodeId].text||'').slice(0,40)||'branch')}”</b><button class="bp-x" title="Close">×</button></div>
+    <textarea class="bp-text" spellcheck="false">${escapeHtml(prompt)}</textarea>
+    <div class="bp-meta"><span class="bp-tok">~${tok} tokens</span></div>
+    <div class="bp-row">
+      <button class="bp-copy primary">Copy prompt</button>
+      <button class="bp-toggle">Run with API ▾</button>
+    </div>
+    <div class="bp-run" style="display:none">
+      <div class="bp-run-row">
+        <select class="bp-provider">
+          ${Object.entries(LLM_PROVIDERS).map(([k,v])=>`<option value="${k}"${k===provider?' selected':''}>${v.label}</option>`).join('')}
+        </select>
+        <input class="bp-model" placeholder="model" value="${escapeHtml(model)}">
+      </div>
+      <input class="bp-key" type="password" placeholder="API key (stored only in this browser)" value="${escapeHtml(localStorage.getItem('mindspark:llm:key:'+provider)||'')}">
+      <div class="bp-warn">⚠ Your key is stored in this browser's localStorage and sent directly to the provider. Use a scoped key; don't use this on a shared machine.</div>
+      <button class="bp-send primary">Send →</button>
+      <div class="bp-result" style="display:none"></div>
+    </div>`;
+  document.body.appendChild(panel);
+  panel.addEventListener('mousedown',e=>e.stopPropagation());
+  const $$=s=>panel.querySelector(s);
+  $$('.bp-x').onclick=()=>panel.remove();
+  $$('.bp-copy').onclick=()=>{ navigator.clipboard?.writeText($$('.bp-text').value).then(()=>toast('Prompt copied'),()=>toast('Copy failed')); };
+  $$('.bp-toggle').onclick=()=>{ const r=$$('.bp-run'); r.style.display = r.style.display==='none'?'block':'none'; };
+  const provSel=$$('.bp-provider'), modelIn=$$('.bp-model'), keyIn=$$('.bp-key');
+  provSel.onchange=()=>{ const pv=provSel.value;
+    modelIn.value=localStorage.getItem('mindspark:llm:model:'+pv)||LLM_PROVIDERS[pv].defaultModel;
+    keyIn.value=localStorage.getItem('mindspark:llm:key:'+pv)||''; };
+  $$('.bp-send').onclick=async()=>{
+    const pv=provSel.value, key=keyIn.value.trim(), mdl=modelIn.value.trim()||LLM_PROVIDERS[pv].defaultModel;
+    if(!key){ toast('Enter an API key'); return; }
+    localStorage.setItem('mindspark:llm:provider',pv);
+    localStorage.setItem('mindspark:llm:model:'+pv,mdl);
+    localStorage.setItem('mindspark:llm:key:'+pv,key);
+    const res=$$('.bp-result'); res.style.display='block'; res.textContent='Running…';
+    const send=$$('.bp-send'); send.disabled=true;
+    try{
+      const cfg=LLM_PROVIDERS[pv];
+      const r=await fetch(cfg.url,{method:'POST',headers:cfg.headers(key),body:cfg.body(mdl,$$('.bp-text').value)});
+      if(!r.ok){ const t=await r.text(); throw new Error('HTTP '+r.status+' — '+t.slice(0,200)); }
+      const data=await r.json();
+      const answer=cfg.extract(data)||'(empty response)';
+      res.innerHTML='';
+      const pre=document.createElement('div'); pre.className='bp-answer'; pre.textContent=answer;
+      const acts=document.createElement('div'); acts.className='bp-answer-acts';
+      const cp=document.createElement('button'); cp.textContent='Copy answer';
+      cp.onclick=()=>navigator.clipboard?.writeText(answer).then(()=>toast('Answer copied'));
+      const add=document.createElement('button'); add.className='primary'; add.textContent='Add as child nodes';
+      add.onclick=()=>{ addResponseAsNodes(nodeId, answer); panel.remove(); toast('Added to map'); };
+      acts.appendChild(cp); acts.appendChild(add);
+      res.appendChild(pre); res.appendChild(acts);
+    }catch(e){
+      res.textContent='Error: '+e.message;
+    } finally { send.disabled=false; }
+  };
+}
+// Turn an LLM answer into child nodes under `parentId`. Top-level bullet/numbered
+// lines become separate children; otherwise the whole answer becomes one node.
+function addResponseAsNodes(parentId, answer){
+  if(!map || !map.nodes[parentId]) return;
+  const lines=answer.split('\n').map(l=>l.trim()).filter(Boolean);
+  const bullets=lines.filter(l=>/^([-*•]|\d+[.)])\s+/.test(l));
+  const mk=(text, notes)=>{
+    const id=uid();
+    map.nodes[id]={ id, text:text.slice(0,200), parent:parentId, x:0, y:0, side:null, color:'#fff' };
+    if(notes) map.nodes[id].notes='<p>'+escapeHtml(notes).replace(/\n/g,'<br>')+'</p>';
+  };
+  if(bullets.length>=2 && bullets.length>=lines.length*0.5){
+    bullets.forEach(b=>mk(b.replace(/^([-*•]|\d+[.)])\s+/,'')));
+  } else {
+    const title=lines[0]||'AI response';
+    mk(title.length>60?title.slice(0,60)+'…':title, answer);
+  }
+  autoLayout(); pushHistory(); scheduleSave();
+}
+
+/* ============================================================
+   Presentation mode — step through the map one node at a time.
+   ============================================================ */
+let _pres = null;   // {order, idx, collapsed} while presenting
+function startPresentation(){
+  if(!map || !map.nodes[map.rootId]){ toast('Open a map first'); return; }
+  document.querySelectorAll('.export-pop').forEach(p=>p.remove());
+  // Expand everything so the whole map is walkable; remember what to restore.
+  const wasCollapsed = Object.keys(map.nodes).filter(id=>map.nodes[id].collapsed);
+  wasCollapsed.forEach(id=>map.nodes[id].collapsed=false);
+  // Depth-first order from the root → walks branch by branch.
+  const order=[];
+  const walk=id=>{ order.push(id); childrenOf(id).forEach(walk); };
+  walk(map.rootId);
+  _pres={ order, idx:0, collapsed:wasCollapsed };
+  document.body.classList.add('presenting');
+  autoLayout();
+  const bar=document.createElement('div');
+  bar.className='pres-bar';
+  bar.innerHTML=`<button class="pres-prev" title="Previous (←)">◀</button>
+    <span class="pres-count"></span>
+    <span class="pres-title"></span>
+    <button class="pres-next" title="Next (→ / Space)">▶</button>
+    <button class="pres-exit" title="Exit (Esc)">✕</button>`;
+  document.body.appendChild(bar);
+  bar.addEventListener('mousedown',e=>e.stopPropagation());
+  bar.querySelector('.pres-prev').onclick=()=>presStep(-1);
+  bar.querySelector('.pres-next').onclick=()=>presStep(1);
+  bar.querySelector('.pres-exit').onclick=()=>endPresentation();
+  document.addEventListener('keydown', presKey, true);
+  presGo(0);
+}
+function presKey(e){
+  if(!_pres) return;
+  if(e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' '||e.key==='PageDown'){ e.preventDefault(); e.stopPropagation(); presStep(1); }
+  else if(e.key==='ArrowLeft'||e.key==='ArrowUp'||e.key==='PageUp'){ e.preventDefault(); e.stopPropagation(); presStep(-1); }
+  else if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); endPresentation(); }
+}
+function presStep(d){ if(!_pres) return; presGo(Math.max(0, Math.min(_pres.order.length-1, _pres.idx+d))); }
+function presGo(i){
+  if(!_pres) return;
+  _pres.idx=i;
+  const id=_pres.order[i];
+  document.querySelectorAll('.node.pres-current').forEach(el=>el.classList.remove('pres-current'));
+  const el=document.querySelector(`.node[data-id="${id}"]`);
+  if(el) el.classList.add('pres-current');
+  // Comfortable fixed zoom, centred on the current node.
+  view.k=Math.min(1.1, Math.max(view.k, 0.9));
+  centreOn(id);
+  const bar=document.querySelector('.pres-bar');
+  if(bar){
+    bar.querySelector('.pres-count').textContent=`${i+1} / ${_pres.order.length}`;
+    bar.querySelector('.pres-title').textContent=nodeTextPlain(map.nodes[id]?.text||'')||'(untitled)';
+    bar.querySelector('.pres-prev').disabled = i===0;
+    bar.querySelector('.pres-next').disabled = i===_pres.order.length-1;
+  }
+}
+function endPresentation(){
+  if(!_pres) return;
+  document.removeEventListener('keydown', presKey, true);
+  document.querySelectorAll('.pres-bar').forEach(b=>b.remove());
+  document.querySelectorAll('.node.pres-current').forEach(el=>el.classList.remove('pres-current'));
+  document.body.classList.remove('presenting');
+  // Restore collapse state (presentation never persists changes).
+  (_pres.collapsed||[]).forEach(id=>{ if(map.nodes[id]) map.nodes[id].collapsed=true; });
+  _pres=null;
+  autoLayout(); fit();
+}
+
 function exportJSON(){
   const blob=new Blob([JSON.stringify(map,null,2)],{type:'application/json'});
   download(blob,(map.title||'mindmap')+'.json'); toast('JSON exported');
@@ -3756,9 +4218,9 @@ function parseMarkdownOutline(text, filename){
 function nodeTextPlain(text){
   if(!text) return '';
   if(!INLINE_HTML_RE.test(text)) return text;
-  const tmp=document.createElement('div'); tmp.innerHTML=text;
-  tmp.querySelectorAll('br').forEach(br=>br.replaceWith(document.createTextNode('\n')));
-  return (tmp.textContent||'').replace(/\u00A0/g,' ').trim();
+  const tpl=document.createElement('template'); tpl.innerHTML=text;   // inert parse
+  tpl.content.querySelectorAll('br').forEach(br=>br.replaceWith(document.createTextNode('\n')));
+  return (tpl.content.textContent||'').replace(/\u00A0/g,' ').trim();
 }
 // Rough token count: ~4 chars per token (English avg for GPT/Claude tokenizers).
 // Adds notes content to the total so the badge reflects what would actually be
@@ -4540,6 +5002,7 @@ function applyUiScale(v){
   const z = (v && v>=0.5 && v<=2) ? v : 1;
   document.documentElement.style.zoom = z!==1 ? String(z) : '';
   document.documentElement.style.setProperty('--ui-zoom', String(z));
+  _invalidateZoom();
 }
 function setUiScale(v){
   v = Math.min(2, Math.max(0.5, v||1));
@@ -5125,8 +5588,20 @@ async function tryEnterSharedView(){
         nodes:payload.nodes||{}, links:payload.links||[], vars:payload.vars||{} };
   sel=null;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
-  render(); fit();
+  render();
   showSharedBanner();
+  // Lay out + fit once the page has actually been laid out. At initial boot the
+  // stage (and nodes) can still measure 0, which makes fit() center on a wrong
+  // box and the map disappears. Re-running autoLayout re-measures every node and
+  // recomputes clean positions, then fit() frames it. Retry across frames until
+  // the stage has a real size; also do it on window 'load' as a backstop.
+  let tries=0;
+  const settle=()=>{
+    if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); }
+    else if(tries++<60){ requestAnimationFrame(settle); }
+  };
+  requestAnimationFrame(settle);
+  window.addEventListener('load', ()=>{ autoLayout(); fit(); }, { once:true });
   return true;
 }
 function showSharedBanner(){

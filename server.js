@@ -34,19 +34,40 @@ db.exec(`
     data    TEXT NOT NULL,
     updated INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS map_versions (
+    id    TEXT NOT NULL,
+    ts    INTEGER NOT NULL,
+    data  TEXT NOT NULL,
+    PRIMARY KEY (id, ts)
+  );
+  CREATE INDEX IF NOT EXISTS idx_versions_id ON map_versions (id, ts DESC);
 `);
 const Q = {
   list:   db.prepare('SELECT id, title, color, updated FROM maps ORDER BY updated DESC'),
   get:    db.prepare('SELECT data FROM maps WHERE id = ?'),
   insert: db.prepare('INSERT INTO maps (id,title,color,data,updated) VALUES (?,?,?,?,?)'),
   update: db.prepare('UPDATE maps SET title=?, color=?, data=?, updated=? WHERE id=?'),
-  del:    db.prepare('DELETE FROM maps WHERE id = ?')
+  del:    db.prepare('DELETE FROM maps WHERE id = ?'),
+  // version history
+  vLatest: db.prepare('SELECT data FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 1'),
+  vInsert: db.prepare('INSERT OR REPLACE INTO map_versions (id,ts,data) VALUES (?,?,?)'),
+  vList:   db.prepare('SELECT ts FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 100'),
+  vGet:    db.prepare('SELECT data FROM map_versions WHERE id = ? AND ts = ?'),
+  vDelOld: db.prepare('DELETE FROM map_versions WHERE id = ? AND ts NOT IN (SELECT ts FROM map_versions WHERE id = ? ORDER BY ts DESC LIMIT 50)'),
+  vDelAll: db.prepare('DELETE FROM map_versions WHERE id = ?')
 };
 const upsert = (m) => {
   const data = JSON.stringify(m);
   const updated = m.updated || Date.now();
   const r = Q.update.run(m.title || 'Untitled map', m.color || null, data, updated, m.id);
   if (r.changes === 0) Q.insert.run(m.id, m.title || 'Untitled map', m.color || null, data, updated);
+  // Snapshot a version only when the content actually changed (skips no-op autosaves),
+  // then prune to the most recent 50 per map.
+  const last = Q.vLatest.get(m.id);
+  if (!last || last.data !== data) {
+    Q.vInsert.run(m.id, updated, data);
+    Q.vDelOld.run(m.id, m.id);
+  }
 };
 
 // ---- tiny helpers --------------------------------------------------------
@@ -82,7 +103,7 @@ const server = http.createServer(async (req, res) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",
-    "connect-src 'self' https://api.github.com",
+    "connect-src 'self' https://api.github.com https://api.crossref.org https://api.anthropic.com https://api.openai.com",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'"
@@ -109,7 +130,18 @@ const server = http.createServer(async (req, res) => {
         const m = await readBody(req); m.id = id; upsert(m);
         return send(res, 200, { ok: true, id });
       }
-      if (req.method === 'DELETE') { Q.del.run(id); res.writeHead(204); return res.end(); }
+      if (req.method === 'DELETE') { Q.del.run(id); Q.vDelAll.run(id); res.writeHead(204); return res.end(); }
+    }
+
+    // ----- version history -----
+    const vListMatch = p.match(/^\/api\/maps\/([\w-]+)\/versions$/);
+    if (vListMatch && req.method === 'GET') {
+      return send(res, 200, Q.vList.all(vListMatch[1]).map(r => ({ ts: r.ts })));
+    }
+    const vGetMatch = p.match(/^\/api\/maps\/([\w-]+)\/versions\/(\d+)$/);
+    if (vGetMatch && req.method === 'GET') {
+      const row = Q.vGet.get(vGetMatch[1], Number(vGetMatch[2]));
+      return row ? send(res, 200, row.data, 'application/json') : send(res, 404, { error: 'not found' });
     }
 
     if (p === '/healthz') return send(res, 200, { ok: true });
