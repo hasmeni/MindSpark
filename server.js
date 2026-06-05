@@ -57,14 +57,36 @@ const send = (res, code, body, type='application/json') => {
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 };
 const readBody = (req) => new Promise((resolve, reject) => {
-  let d = ''; req.on('data', c => { d += c; if (d.length > 8e6) req.destroy(); });
+  let d = '';
+  req.on('data', c => { d += c; if (d.length > 8e6) { req.destroy(); reject(new Error('payload too large')); } });
   req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(e); } });
+  req.on('error', reject);
 });
 
 // ---- server --------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
+
+  // Baseline security headers on every response.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Frame-Options', 'DENY');
+  // Defense-in-depth CSP. Permits everything the app actually uses (self,
+  // inline styles/script for the bootstrap, Google Fonts, data:/blob: images,
+  // and the GitHub API for cloud mode) while blocking external script/exfil
+  // origins, framing, and plugins. Relax if you self-host extra integrations.
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "connect-src 'self' https://api.github.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'"
+  ].join('; '));
 
   try {
     // ----- API -----

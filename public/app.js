@@ -243,6 +243,7 @@ function render(){
   viewport.dataset.style = map.style || 'modern';
   viewport.dataset.layout = map.layout || 'balanced';
   const hidden=hiddenSet();
+  const toMeasure=[];
   // nodes
   for(const id in map.nodes){
     if(hidden.has(id)) continue;
@@ -383,13 +384,16 @@ function render(){
       el.appendChild(tb);
     }
     viewport.appendChild(el);
-    // measure & store size for layout/edges — getBoundingClientRect returns
-    // VISUAL px, scaled by BOTH the canvas zoom (view.k) and the UI display
-    // zoom, so divide by both to get true layout dimensions. (Otherwise a
-    // reduced display size makes nodes measure too small → cramped layout and
-    // the style bar sitting on top of the node.)
+    toMeasure.push({el, n});
+  }
+  // Measure ALL nodes in one pass AFTER appending — reading getBoundingClientRect
+  // interleaved with appends forces a layout reflow per node (O(n) thrash). One
+  // batched read loop triggers a single reflow. getBoundingClientRect returns
+  // VISUAL px, scaled by BOTH the canvas zoom (view.k) and the UI display zoom,
+  // so divide by both to recover true layout dimensions.
+  const sz=view.k*_uiZ();
+  for(const {el, n} of toMeasure){
     const r=el.getBoundingClientRect();
-    const sz=view.k*_uiZ();
     n.w=r.width/sz; n.h=r.height/sz;
   }
   drawEdges(hidden);
@@ -510,15 +514,22 @@ function fragmentToLines(frag){
 const INLINE_HTML_RE = /<(b|i|u|s|strong|em|br|a|span|font|div|ul|ol|li|p)\b/i;
 // Sanitize HTML: keep only a small inline-formatting whitelist; strip everything else
 const SAFE_TAGS = new Set(['b','i','u','s','strong','em','br','a','span','font','div','ul','ol','li','p']);
-function sanitizeInlineHTML(html){
-  const tmp = document.createElement('div');
-  tmp.innerHTML = html;
+function sanitizeInlineHTML(html, extraTags){
+  // Parse INERTLY via <template>: its contents live in a document with no
+  // browsing context, so smuggled resource-loaders like <img src=x onerror=…>
+  // never fetch/fire during parsing. (A detached <div>.innerHTML still would.)
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html || '';
+  const allow = extraTags ? new Set([...SAFE_TAGS, ...extraTags]) : SAFE_TAGS;
   const walk = (node) => {
     [...node.childNodes].forEach(child => {
       if(child.nodeType === 1){
         const tag = child.tagName.toLowerCase();
-        if(!SAFE_TAGS.has(tag)){
-          // Unwrap unknown elements — keep their text children inline
+        if(DROP_TAGS.has(tag)){ node.removeChild(child); return; }  // remove element AND its contents
+        if(!allow.has(tag)){
+          // Clean the subtree FIRST (so nothing dangerous survives), then unwrap —
+          // keep only its (now-sanitized) text/inline children inline.
+          walk(child);
           while(child.firstChild) node.insertBefore(child.firstChild, child);
           node.removeChild(child);
           return;
@@ -546,9 +557,18 @@ function sanitizeInlineHTML(html){
       }
     });
   };
-  walk(tmp);
-  return tmp.innerHTML;
+  walk(tpl.content);
+  // Serialize the now-sanitized fragment (no re-parse of untrusted input).
+  const out = document.createElement('div');
+  out.appendChild(tpl.content);
+  return out.innerHTML;
 }
+// Notes allow a few block tags on top of the inline set (headings, quotes).
+const NOTES_TAGS = ['h1','h2','h3','blockquote'];
+// Elements removed WITH their contents (never unwrapped) — unwrapping these can
+// promote a hidden <script> to the top level where a snapshotted loop misses it.
+const DROP_TAGS = new Set(['script','style','iframe','object','embed','noscript','svg','math','template','link','meta','base','frame','frameset','title','xmp']);
+function sanitizeNotes(html){ return sanitizeInlineHTML(html, NOTES_TAGS); }
 function renderNodeText(container, text, listType){
   container.textContent='';
   const isHTML = INLINE_HTML_RE.test(text||'');
@@ -2333,14 +2353,14 @@ function replaceInNode(id, find, repl){
   const re=new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), flags);
   let count=0;
   if(INLINE_HTML_RE.test(n.text||'')){
-    // Walk text nodes only, preserving tags
-    const tmp=document.createElement('div'); tmp.innerHTML=n.text;
-    const walker=document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+    // Walk text nodes only, preserving tags — parse inertly via <template>.
+    const tpl=document.createElement('template'); tpl.innerHTML=n.text||'';
+    const walker=document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
     const texts=[]; let t; while((t=walker.nextNode())) texts.push(t);
     texts.forEach(tn=>{
       if(re.test(tn.nodeValue||'')){ re.lastIndex=0; tn.nodeValue=tn.nodeValue.replace(re, ()=>{count++;return repl;}); }
     });
-    if(count) n.text=tmp.innerHTML;
+    if(count){ const d=document.createElement('div'); d.appendChild(tpl.content); n.text=d.innerHTML; }
   } else {
     const out=(n.text||'').replace(re, ()=>{count++; return repl;});
     if(count) n.text=out;
@@ -2507,7 +2527,7 @@ function showNotesEditor(nodeId){
       <button data-c="unlink"      title="Remove link">⊘🔗</button>
       <button data-c="removeFormat" title="Clear formatting">⨯</button>
     </div>
-    <div class="np-editor" contenteditable="true" data-placeholder="Type your notes — Markdown-style formatting available via the toolbar.">${n.notes||''}</div>
+    <div class="np-editor" contenteditable="true" data-placeholder="Type your notes — Markdown-style formatting available via the toolbar."></div>
     <div class="np-actions">
       ${has?'<button class="np-clear">Remove</button>':''}
       <button class="np-cancel">Cancel</button>
@@ -2519,6 +2539,7 @@ function showNotesEditor(nodeId){
   document.body.appendChild(popup);
   popup.addEventListener('mousedown',e=>e.stopPropagation());
   const editor=popup.querySelector('.np-editor');
+  editor.innerHTML = sanitizeNotes(n.notes||'');   // safe: inert-parsed, whitelisted
   editor.focus();
   // Place cursor at end
   const range=document.createRange(); range.selectNodeContents(editor); range.collapse(false);
@@ -2540,11 +2561,8 @@ function showNotesEditor(nodeId){
 
   const close=()=>popup.remove();
   const save=()=>{
-    // Sanitize: strip <script>/<style>, on*= handlers — fine for self-hosted, kept defensive
-    const html=editor.innerHTML
-      .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi,'')
-      .replace(/\son\w+\s*=\s*"[^"]*"/gi,'')
-      .replace(/\son\w+\s*=\s*'[^']*'/gi,'');
+    // Robust sanitize (inert parse + tag/attr whitelist) before storing.
+    const html=sanitizeNotes(editor.innerHTML);
     const plain=html.replace(/<[^>]*>/g,'').trim();
     if(plain) map.nodes[nodeId].notes=html; else delete map.nodes[nodeId].notes;
     pushHistory(); render(); close();
