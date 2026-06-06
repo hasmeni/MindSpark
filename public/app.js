@@ -600,6 +600,11 @@ function fragmentToLines(frag){
   return lines.filter(l => l !== undefined);
 }
 const INLINE_HTML_RE = /<(b|i|u|s|strong|em|br|a|span|font|div|ul|ol|li|p)\b/i;
+// HTML entities (named like &nbsp;/&amp;, decimal &#160;, or hex &#xA0;). Text that
+// contains these but no tags still needs to go through the HTML path so the entity
+// is decoded for display instead of showing the literal "&nbsp;".
+const ENTITY_RE = /&(#\d+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);/;
+const hasInlineMarkup = t => INLINE_HTML_RE.test(t||'') || ENTITY_RE.test(t||'');
 // Sanitize HTML: keep only a small inline-formatting whitelist; strip everything else
 const SAFE_TAGS = new Set(['b','i','u','s','strong','em','br','a','span','font','div','ul','ol','li','p']);
 function sanitizeInlineHTML(html, extraTags){
@@ -659,7 +664,7 @@ const DROP_TAGS = new Set(['script','style','iframe','object','embed','noscript'
 function sanitizeNotes(html){ return sanitizeInlineHTML(html, NOTES_TAGS); }
 function renderNodeText(container, text, listType){
   container.textContent='';
-  const isHTML = INLINE_HTML_RE.test(text||'');
+  const isHTML = hasInlineMarkup(text);
   if(!listType){
     if(isHTML){
       container.innerHTML = sanitizeInlineHTML(text);
@@ -1980,11 +1985,13 @@ let dropTarget=null;   // id of node currently hovered as a reparent target
 // can move together during a drag, then reset cleanly on cancel.
 function beginSubtreeDrag(id, mx, my){
   const subtree={};
-  const collect = i => {
-    subtree[i] = { x: map.nodes[i].x, y: map.nodes[i].y };
-    childrenOf(i).forEach(collect);
-  };
-  collect(id);
+  withChildIndex(()=>{
+    const collect = i => {
+      subtree[i] = { x: map.nodes[i].x, y: map.nodes[i].y };
+      childrenOf(i).forEach(collect);
+    };
+    collect(id);
+  });
   return { mx, my, root:id, subtree };
 }
 // Apply (dx,dy) delta to the whole subtree captured in start.subtree.
@@ -2124,7 +2131,10 @@ stage.addEventListener('mousedown',e=>{
     select(id,false);
     if(READONLY) return;          // view-only: allow selection, no dragging/editing
     dragNode=id; moved=false;
-    dragStart=beginSubtreeDrag(id, e.clientX, e.clientY);
+    // Defer staging the subtree-drag until the pointer actually moves. Staging it
+    // here walks the node's whole subtree, which makes selecting a large branch
+    // (e.g. the root of a big map) slow — a plain click should be instant.
+    dragStart={ mx:e.clientX, my:e.clientY, root:id, subtree:null };
   } else {
     if(reparentMode){ reparentMode=false; hideBulkBar(); updateMultiSelUI(); }
     if(linkMode) cancelLinkMode();
@@ -2152,11 +2162,15 @@ window.addEventListener('mousemove',e=>{
     const sc=view.k*_uiZ();
     const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    applySubtreeDelta(dragStart, dx, dy);
-    drawEdges(hiddenSet());
-    positionNodeBar();
-    // Detect a drop target under the cursor (only after a real drag has started)
-    if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
+    if(moved){
+      // Stage the subtree the first time a real drag begins (not on click).
+      if(!dragStart.subtree) dragStart=beginSubtreeDrag(dragNode, dragStart.mx, dragStart.my);
+      applySubtreeDelta(dragStart, dx, dy);
+      drawEdges(hiddenSet());
+      positionNodeBar();
+      // Detect a drop target under the cursor (only after a real drag has started)
+      if(dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
+    }
   } else if(panning){
     const z=_uiZ();
     view.x=panStart.vx+(e.clientX-panStart.x)/z; view.y=panStart.vy+(e.clientY-panStart.y)/z;
@@ -3415,6 +3429,32 @@ const TEMPLATES = {
   },
 
   /* ===== Event & personal ===== */
+  personal_hub: {
+    name:'Personal dashboard', desc:'Journal, to-dos, habits, goals — your life in one map', color:'#8c5da7', group:'personal', icon:'🌱',
+    nodes:[
+      { k:'root', text:'My life' },
+      { k:'jr',  parent:'root', text:'Journal' },
+      { k:'jr1', parent:'jr',   text:'Today — [date]' },
+      { k:'jr2', parent:'jr',   text:'Grateful for…' },
+      { k:'jr3', parent:'jr',   text:'On my mind…' },
+      { k:'td',  parent:'root', text:'To-do' },
+      { k:'td1', parent:'td',   text:'Today', task:'todo' },
+      { k:'td2', parent:'td',   text:'This week', task:'todo' },
+      { k:'td3', parent:'td',   text:'Someday / maybe' },
+      { k:'hb',  parent:'root', text:'Habits' },
+      { k:'hb1', parent:'hb',   text:'Daily — [e.g. read 20 min]', task:'todo' },
+      { k:'hb2', parent:'hb',   text:'Weekly — [e.g. exercise 3×]', task:'todo' },
+      { k:'go',  parent:'root', text:'Goals' },
+      { k:'go1', parent:'go',   text:'This month' },
+      { k:'go2', parent:'go',   text:'This year' },
+      { k:'id',  parent:'root', text:'Ideas & notes' },
+      { k:'id1', parent:'id',   text:'[capture anything here]' },
+      { k:'rv',  parent:'root', text:'Weekly review' },
+      { k:'rv1', parent:'rv',   text:'What went well?' },
+      { k:'rv2', parent:'rv',   text:'What to improve?' },
+      { k:'rv3', parent:'rv',   text:'Focus for next week' }
+    ]
+  },
   event: {
     name:'Event planning', desc:'Venue, guests, schedule, budget', color:'#6a8c3f', group:'personal', icon:'🎉',
     nodes:[
@@ -4225,24 +4265,121 @@ function exportJSON(){
   download(blob,(map.title||'mindmap')+'.json'); toast('JSON exported');
 }
 function importJSON(){ importFile(); }   // back-compat alias
+// ---- GitMind (.gmind) import ----------------------------------------------
+// A .gmind file is a ZIP archive containing content.json (GitMind's nested tree).
+// Read the ZIP via its central directory; inflate DEFLATE entries with the native
+// DecompressionStream. No external dependency.
+async function _gmindUnzip(buf){
+  const dv=new DataView(buf), bytes=new Uint8Array(buf);
+  let eocd=-1;
+  for(let i=bytes.length-22; i>=0; i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error('Not a valid .gmind file (no ZIP directory)');
+  const cdCount=dv.getUint16(eocd+10,true), cdOffset=dv.getUint32(eocd+16,true);
+  const files={}; let p=cdOffset;
+  for(let n=0;n<cdCount;n++){
+    if(dv.getUint32(p,true)!==0x02014b50) break;
+    const method=dv.getUint16(p+10,true);
+    const compSize=dv.getUint32(p+20,true);
+    const nameLen=dv.getUint16(p+28,true), extraLen=dv.getUint16(p+30,true), commentLen=dv.getUint16(p+32,true);
+    const localOff=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(bytes.subarray(p+46, p+46+nameLen));
+    const lhNameLen=dv.getUint16(localOff+26,true), lhExtraLen=dv.getUint16(localOff+28,true);
+    const dataStart=localOff+30+lhNameLen+lhExtraLen;
+    files[name]={method, comp:bytes.subarray(dataStart, dataStart+compSize)};
+    p += 46+nameLen+extraLen+commentLen;
+  }
+  const key=Object.keys(files).find(k=>/(^|\/)content\.json$/i.test(k)) || Object.keys(files).find(k=>/\.json$/i.test(k));
+  if(!key) throw new Error('No content.json found inside the .gmind file');
+  const f=files[key]; let out;
+  if(f.method===0){ out=f.comp; }
+  else if(f.method===8){
+    const stream=new Response(f.comp).body.pipeThrough(new DecompressionStream('deflate-raw'));
+    out=new Uint8Array(await new Response(stream).arrayBuffer());
+  } else throw new Error('Unsupported compression in .gmind (method '+f.method+')');
+  return new TextDecoder('utf-8').decode(out);
+}
+// GitMind stores rich text as HTML. Fold block elements to line breaks and run it
+// through our inline sanitizer so formatting survives but nothing dangerous does.
+function gmindHtmlToInline(html, plain){
+  if(!html) return plain!=null ? String(plain) : '';
+  let s=String(html).replace(/<\/(p|div)>/gi,'<br>').replace(/<(p|div)[^>]*>/gi,'');
+  s=s.replace(/(\s*<br\s*\/?>\s*)+$/i,'');   // trim trailing breaks
+  return sanitizeInlineHTML(s);
+}
+function convertGmindToMap(d, filename){
+  const rootNode = d.root || (d.data || d.children ? d : (d.body && (d.body.root||d.body)) || d);
+  if(!rootNode) throw new Error('Unrecognized .gmind structure');
+  const nodes={}; const links=[]; let counter=0; const newId=()=>'g'+(counter++);
+  let rootId=null;
+  const applyStyle=(n, style)=>{
+    if(!style) return;
+    const fs=parseInt(style.fontSize,10); if(fs) n.fontSize=fs;
+    if(style.fontWeight==='bold' || +style.fontWeight>=600) n.bold=true;
+    if(/italic/i.test(style.fontStyle||'')) n.italic=true;
+    const td=style.textDecoration||style.textDecorationLine||'';
+    if(/underline/i.test(td)) n.underline=true;
+    if(/line-through/i.test(td)) n.strike=true;
+    if(style.color) n.textColor=style.color;
+  };
+  const walk=(g, parentId, isRoot)=>{
+    const data=g.data||{};
+    const id=newId();
+    const plain = data.text!=null ? String(data.text) : '';
+    const n={ id, parent:parentId, x:0, y:0,
+      text: data.html ? gmindHtmlToInline(data.html, plain) : plain };
+    const kids = Array.isArray(g.children) ? g.children : [];
+    if(kids.length && !isRoot) n.collapsed = (data.expanded===false);
+    if(data.image){ const im=data.image; const url = typeof im==='string'?im:(im.url||im.src||''); if(url) n.image=url; }
+    applyStyle(n, g.style);
+    nodes[id]=n;
+    if(isRoot){
+      rootId=id; n.side='root';
+      const split = (data.mindLayoutSplitIndex!=null) ? data.mindLayoutSplitIndex : Math.ceil(kids.length/2);
+      kids.forEach((c,i)=>{ const cid=walk(c, id, false); nodes[cid].side = i<split ? 'right' : 'left'; });
+    } else {
+      kids.forEach(c=> walk(c, id, false));
+    }
+    return id;
+  };
+  walk(rootNode, null, true);
+  const title = (rootId && nodes[rootId]) ? nodeTextPlain(nodes[rootId].text) : '';
+  return { id:uid(), title: title || (filename||'Imported').replace(/\.gmind$/i,''),
+           titleAuto:false, color:'#e0613a', rootId, nodes, links, vars:{} };
+}
+async function parseGmind(buf, filename){
+  const jsonText = await _gmindUnzip(buf);
+  let d; try{ d=JSON.parse(jsonText); }catch(e){ throw new Error('.gmind content.json is not valid JSON'); }
+  return convertGmindToMap(d, filename);
+}
+
 function importFile(){
   const inp=document.createElement('input');
   inp.type='file';
-  inp.accept='.json,.opml,.xml,.md,.markdown,.txt';
+  inp.accept='.json,.opml,.xml,.md,.markdown,.txt,.gmind';
   inp.onchange=async()=>{
     const f=inp.files[0]; if(!f) return;
-    const t=await f.text();
     const name=(f.name||'').toLowerCase();
     try{
-      let m;
-      if(name.endsWith('.json')) { m=JSON.parse(t); }
-      else if(name.endsWith('.opml')||name.endsWith('.xml')) { m=parseOPML(t, f.name); }
-      else { m=parseMarkdownOutline(t, f.name); }   // .md, .markdown, .txt
+      let m, preserveState=false;
+      if(name.endsWith('.gmind')){
+        // Binary ZIP — read as bytes, not text. GitMind carries its own
+        // expanded/collapsed state, so don't force-collapse afterwards.
+        m=await parseGmind(await f.arrayBuffer(), f.name);
+        preserveState=true;
+      } else {
+        const t=await f.text();
+        if(name.endsWith('.json')) { m=JSON.parse(t); }
+        else if(name.endsWith('.opml')||name.endsWith('.xml')) { m=parseOPML(t, f.name); }
+        else { m=parseMarkdownOutline(t, f.name); }   // .md, .markdown, .txt
+      }
       if(!m || !m.nodes || !m.rootId) throw new Error('No recognizable outline');
-      // Start collapsed so the user sees a clean top-level overview of the import.
-      Object.keys(m.nodes).forEach(id=>{
-        if(id !== m.rootId) m.nodes[id].collapsed = true;
-      });
+      // Start collapsed so the user sees a clean top-level overview (unless the
+      // format already carries its own expand state, e.g. .gmind).
+      if(!preserveState){
+        Object.keys(m.nodes).forEach(id=>{
+          if(id !== m.rootId) m.nodes[id].collapsed = true;
+        });
+      }
       m.id=uid();
       await Store.save(m);
       await loadMap(m.id);
@@ -4250,7 +4387,7 @@ function importFile(){
       // proper tree, then frame the result.
       autoLayout(); fit();
       refreshList();
-      toast('Imported '+f.name+' (collapsed — click ＋ to expand)');
+      toast('Imported '+f.name + (preserveState?'':' (collapsed — click ＋ to expand)'));
     }catch(e){ console.error(e); alert('Could not import this file:\n'+e.message); }
   };
   inp.click();
@@ -4328,7 +4465,7 @@ function parseMarkdownOutline(text, filename){
 // Strip HTML to plain text but keep newlines from <br> and block elements
 function nodeTextPlain(text){
   if(!text) return '';
-  if(!INLINE_HTML_RE.test(text)) return text;
+  if(!hasInlineMarkup(text)) return text;
   const tpl=document.createElement('template'); tpl.innerHTML=text;   // inert parse
   tpl.content.querySelectorAll('br').forEach(br=>br.replaceWith(document.createTextNode('\n')));
   return (tpl.content.textContent||'').replace(/\u00A0/g,' ').trim();
@@ -5705,6 +5842,9 @@ async function tryEnterSharedView(){
         nodes:payload.nodes||{}, links:payload.links||[], vars:payload.vars||{} };
   sel=null;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
+  // Grow the title <input> to fit the whole title (it clips to its width) so a
+  // shared map shows its full name rather than a truncation.
+  $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
   showSharedBanner();
   // Lay out + fit once the page has actually been laid out. At initial boot the
