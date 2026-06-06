@@ -485,7 +485,7 @@ function render(){
   }
   drawEdges(hidden);
   positionNodeBar();
-  updateTokenTotal();
+  scheduleTokenTotal();
   updateMinimap();
   updateBreadcrumb();
   // Re-apply multi-selection outlines (render rebuilds node elements)
@@ -496,6 +496,15 @@ function render(){
 }
 
 // Sum estimated tokens across every node (text + notes) and show in the topbar.
+let _tokTimer=null;
+// The token total scans every node's text, which is wasteful to do synchronously
+// inside render() (it dominated render time even when only a few nodes were
+// visible). Schedule it off the hot path and coalesce bursts of renders into one
+// recompute — the badge is a non-critical stat, so a ~300ms delay is invisible.
+function scheduleTokenTotal(){
+  if(_tokTimer) return;
+  _tokTimer=setTimeout(()=>{ _tokTimer=null; try{ updateTokenTotal(); }catch(e){} }, 300);
+}
 function updateTokenTotal(){
   const el = $('#tokenTotal');
   if(!el || !map || !map.nodes){ if(el) el.textContent=''; return; }
@@ -4269,7 +4278,7 @@ function importJSON(){ importFile(); }   // back-compat alias
 // A .gmind file is a ZIP archive containing content.json (GitMind's nested tree).
 // Read the ZIP via its central directory; inflate DEFLATE entries with the native
 // DecompressionStream. No external dependency.
-async function _gmindUnzip(buf){
+async function _gmindUnzip(buf, prefer){
   const dv=new DataView(buf), bytes=new Uint8Array(buf);
   let eocd=-1;
   for(let i=bytes.length-22; i>=0; i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
@@ -4288,7 +4297,9 @@ async function _gmindUnzip(buf){
     files[name]={method, comp:bytes.subarray(dataStart, dataStart+compSize)};
     p += 46+nameLen+extraLen+commentLen;
   }
-  const key=Object.keys(files).find(k=>/(^|\/)content\.json$/i.test(k)) || Object.keys(files).find(k=>/\.json$/i.test(k));
+  const key=(prefer && Object.keys(files).find(k=>k.toLowerCase().endsWith(prefer)))
+    || Object.keys(files).find(k=>/(^|\/)content\.json$/i.test(k))
+    || Object.keys(files).find(k=>/\.json$/i.test(k));
   if(!key) throw new Error('No content.json found inside the .gmind file');
   const f=files[key]; let out;
   if(f.method===0){ out=f.comp; }
@@ -4352,10 +4363,69 @@ async function parseGmind(buf, filename){
   return convertGmindToMap(d, filename);
 }
 
+// ---- MindMeister (.mind) import -------------------------------------------
+// A .mind file is a ZIP wrapping map.json: a nested tree whose node text lives in
+// `title`, with `note` / `link` / `image` fields and a flat `connections` list.
+function mindTitleToText(title){
+  if(title==null) return '';
+  const t=String(title).replace(/\r\n?/g,'\n');
+  // Preserve intra-title line breaks as <br> (titles can contain hard wraps).
+  return t.indexOf('\n')>=0 ? t.split('\n').map(escapeHtml).join('<br>') : t;
+}
+function convertMindToMap(d, filename){
+  const root = d.root || d;
+  if(!root || !root.children && root.title==null) throw new Error('Unrecognized .mind structure');
+  const nodes={}; const links=[]; let counter=0; const newId=()=>'m'+(counter++);
+  const idMap={}; let rootId=null;
+  const th=d.theme||{};
+  const bg=(th.root_style&&th.root_style.backgroundColor)||(th.background&&th.background.color)||'';
+  const themeColor = /^#?[0-9a-f]{6}$/i.test(bg) ? ('#'+bg.replace(/^#/,'')) : '#5b8db2';
+  const applyStyle=(n, style)=>{
+    if(!style) return;
+    if(style.bold) n.bold=true;
+    if(style.italic) n.italic=true;
+    const fs=parseInt(style.fontSize,10); if(fs) n.fontSize=fs;
+    if(style.color && /^#?[0-9a-f]{6}$/i.test(style.color)) n.textColor='#'+String(style.color).replace(/^#/,'');
+  };
+  const walk=(g, parentId, isRoot)=>{
+    const id=newId();
+    if(g.id!=null) idMap[g.id]=id;
+    const kids = Array.isArray(g.children) ? g.children : [];
+    const n={ id, parent:parentId, x:0, y:0, text: mindTitleToText(g.title) };
+    const note=g.note!=null ? String(g.note).trim() : '';
+    if(note && note!=='-') n.notes = sanitizeNotes(note.replace(/\r\n?/g,'\n').replace(/\n/g,'<br>'));
+    if(g.link){ const url=String(g.link); n.notes=(n.notes||'')+`<p><a href="${escapeHtml(url)}">${escapeHtml(url)}</a></p>`; }
+    if(g.image){ const im=g.image; const url=typeof im==='string'?im:(im.url||im.src||''); if(url) n.image=url; }
+    applyStyle(n, g.style);
+    nodes[id]=n;
+    if(isRoot){
+      rootId=id; n.side='root';
+      const half=Math.ceil(kids.length/2);
+      kids.forEach((c,i)=>{ const cid=walk(c,id,false); nodes[cid].side = i<half?'right':'left'; });
+    } else {
+      kids.forEach(c=>walk(c,id,false));
+    }
+    return id;
+  };
+  walk(root, null, true);
+  (Array.isArray(d.connections)?d.connections:[]).forEach(c=>{
+    const a=idMap[c.from!=null?c.from:c.source_id], b=idMap[c.to!=null?c.to:c.target_id];
+    if(a && b && a!==b) links.push({from:a, to:b});
+  });
+  const title = (rootId && nodes[rootId]) ? nodeTextPlain(nodes[rootId].text) : '';
+  return { id:uid(), title: title || (filename||'Imported').replace(/\.mind$/i,''),
+           titleAuto:false, color:themeColor, rootId, nodes, links, vars:{} };
+}
+async function parseMind(buf, filename){
+  const jsonText = await _gmindUnzip(buf, 'map.json');
+  let d; try{ d=JSON.parse(jsonText); }catch(e){ throw new Error('.mind map.json is not valid JSON'); }
+  return convertMindToMap(d, filename);
+}
+
 function importFile(){
   const inp=document.createElement('input');
   inp.type='file';
-  inp.accept='.json,.opml,.xml,.md,.markdown,.txt,.gmind';
+  inp.accept='.json,.opml,.xml,.md,.markdown,.txt,.gmind,.mind';
   inp.onchange=async()=>{
     const f=inp.files[0]; if(!f) return;
     const name=(f.name||'').toLowerCase();
@@ -4366,6 +4436,10 @@ function importFile(){
         // expanded/collapsed state, so don't force-collapse afterwards.
         m=await parseGmind(await f.arrayBuffer(), f.name);
         preserveState=true;
+      } else if(name.endsWith('.mind')){
+        // MindMeister ZIP (map.json). No reliable collapse state in the export,
+        // so fall through to the default collapse-to-overview below.
+        m=await parseMind(await f.arrayBuffer(), f.name);
       } else {
         const t=await f.text();
         if(name.endsWith('.json')) { m=JSON.parse(t); }
