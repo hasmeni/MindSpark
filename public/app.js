@@ -208,19 +208,27 @@ let userZoom=null;            // user-chosen camera zoom, preserved across map s
 // The whole UI may be scaled by CSS `zoom` (display size). getBoundingClientRect
 // then returns VISUAL px, but the #viewport transform works in LAYOUT px — so
 // convert by dividing by the active UI zoom for any camera math.
-// The whole UI may be scaled by CSS `zoom` (display size). Under CSS `zoom`,
-// modern browsers report getBoundingClientRect()/clientX in zoom-scaled "visual"
-// pixels, while the #viewport transform works in layout pixels — so camera math
-// divides rect/pointer coords by the active zoom. We read the applied zoom
-// directly (set by the pre-paint head script and by applyUiScale): deterministic
-// and not dependent on a probe element being laid out at the right moment.
+// The whole UI may be scaled by CSS `zoom` (display size). How that interacts
+// with getBoundingClientRect differs by browser/version (some return layout px,
+// some zoom-scaled "visual" px). Rather than assume, MEASURE the factor with a
+// 100px probe so camera math converts rect/pointer coords to the #viewport's
+// layout space correctly on every browser. Cached; invalidated on scale change.
+let _rzCache=null;
 function _uiZ(){
-  const z = parseFloat(document.documentElement.style.zoom);
-  return (z && z > 0) ? z : 1;
+  if(_rzCache!=null) return _rzCache;
+  try{
+    let p=document.getElementById('__zprobe');
+    if(!p){
+      p=document.createElement('div'); p.id='__zprobe'; p.setAttribute('aria-hidden','true');
+      p.style.cssText='position:absolute;width:100px;height:1px;left:-99999px;top:0;pointer-events:none;visibility:hidden';
+      (document.body||document.documentElement).appendChild(p);
+    }
+    const w=p.getBoundingClientRect().width;
+    if(w>0){ _rzCache=w/100; return _rzCache; }   // cache only a real measurement
+  }catch(e){}
+  const z=parseFloat(document.documentElement.style.zoom);
+  return (z && z>0) ? z : 1;                       // fallback before layout exists
 }
-function _invalidateZoom(){ /* no-op: _uiZ reads live state, nothing to cache */ }
-window.addEventListener('resize', _invalidateZoom);
-window.addEventListener('load', _invalidateZoom);
 function _stageSize(){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {w:r.width/z, h:r.height/z}; }
 function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ(); return {x:(cx-r.left)/z, y:(cy-r.top)/z}; }
 // Per-map camera (zoom + pan), saved in localStorage so each map reopens exactly
@@ -278,6 +286,9 @@ function render(){
   $('#empty').style.display='none';
   viewport.dataset.style = map.style || 'modern';
   viewport.dataset.layout = map.layout || 'balanced';
+  const _prevCI=_ci; _ci=buildChildIndex();      // O(1) childrenOf for this render
+  const roll=computeRollups();                    // descendant + task counts in one pass
+  try{
   const hidden=hiddenSet();
   const toMeasure=[];
   // nodes
@@ -359,7 +370,7 @@ function render(){
       el.appendChild(mkHandle(
         'h-collapse'+(n.collapsed?' collapsed':''),
         n.collapsed?'+':'−',
-        n.collapsed?`Expand (${countDesc(id)} hidden)`:'Collapse',
+        n.collapsed?`Expand (${roll.desc[id]||0} hidden)`:'Collapse',
         ()=>{ n.collapsed=!n.collapsed; pushHistory(); autoLayout(); }
       ));
     }
@@ -395,7 +406,7 @@ function render(){
       el.appendChild(cb);
     }
     // Task progress roll-up — shown on nodes that have task-bearing descendants
-    const prog = taskProgress(id);
+    const prog = { done: roll.tdone[id]||0, total: roll.ttot[id]||0 };
     if(prog.total > 0 && !n.task){
       const pb=document.createElement('span');
       pb.className='task-progress'+(prog.done===prog.total?' complete':'');
@@ -441,6 +452,52 @@ function render(){
   if(typeof multiSel !== 'undefined' && multiSel.size){
     multiSel.forEach(id=>document.querySelector(`.node[data-id="${id}"]`)?.classList.add('multi-sel'));
   }
+  } finally { _ci=_prevCI; }
+}
+
+// Patch one node's visual styling in place (no full re-render). Returns false if
+// the node isn't currently in the DOM (hidden/not rendered) so the caller can
+// fall back to a full render. Mirrors the per-node styling in render().
+function patchNodeVisual(id){
+  const n=map.nodes[id]; if(!n) return false;
+  const el=document.querySelector(`.node[data-id="${id}"]`);
+  if(!el) return false;
+  if(id===map.rootId){ el.style.background=colorFor(map.color||'#e0613a'); el.style.color='#fff'; }
+  else if(n.color && n.color!=='#fff' && n.color!=='#ffffff'){ el.style.background=n.color; el.style.color='#23201b'; }
+  else { el.style.background=''; el.style.color=''; }
+  const t=el.querySelector('.node-text');
+  if(t){
+    renderNodeText(t, n.text||'', n.listType);
+    t.style.fontSize  = n.fontSize ? n.fontSize+'px' : '';
+    t.style.fontWeight= n.bold ? '700' : '';
+    t.style.fontStyle = n.italic ? 'italic' : '';
+    const decos=[]; if(n.underline)decos.push('underline'); if(n.strike)decos.push('line-through');
+    t.style.textDecoration = decos.length?decos.join(' '):'';
+    t.style.color = n.textColor || '';
+    if(n.highlight){ t.style.background=n.highlight; t.style.padding='0 4px'; t.style.borderRadius='3px'; t.style.boxDecorationBreak='clone'; t.style.webkitBoxDecorationBreak='clone'; }
+    else { t.style.background=''; t.style.padding=''; t.style.borderRadius=''; t.style.boxDecorationBreak=''; t.style.webkitBoxDecorationBreak=''; }
+    t.classList.toggle('node-text-list', !!n.listType);
+    t.classList.remove('list-ul','list-ol'); if(n.listType) t.classList.add('list-'+n.listType);
+    if(n.align && n.align!=='center'){ t.style.textAlign=n.align; el.style.justifyContent=(n.align==='left')?'flex-start':(n.align==='right')?'flex-end':'center'; }
+    else { t.style.textAlign=''; el.style.justifyContent=''; }
+  }
+  return true;
+}
+// Apply a styling mutation to one node with minimal work: mutate → snapshot →
+// patch that node in place. Only when the change alters the node's measured size
+// (font size, bold, list, …) do we run a layout pass; pure colour/highlight/
+// alignment tweaks are instant with no re-render of the rest of the map.
+function applyNodeStyle(id, mutate){
+  mutate();
+  pushHistory();
+  if(!patchNodeVisual(id)){ render(); scheduleSave(); return; }
+  const el=document.querySelector(`.node[data-id="${id}"]`);
+  const n=map.nodes[id];
+  const sz=view.k*_uiZ();
+  const r=el.getBoundingClientRect();
+  const nw=r.width/sz, nh=r.height/sz;
+  if(Math.abs((n.w||0)-nw)>1.5 || Math.abs((n.h||0)-nh)>1.5){ n.w=nw; n.h=nh; autoLayout(); }
+  else { scheduleSave(); }
 }
 
 // Sum estimated tokens across every node (text + notes) and show in the topbar.
@@ -741,18 +798,63 @@ function edgePath(x1,y1,x2,y2,leftSide,horizontal,style){
 }
 
 /* ---------- tree helpers ---------- */
-const childrenOf=id=>Object.values(map.nodes).filter(n=>n.parent===id).map(n=>n.id);
+// childrenOf() is called heavily (render, layout, rollups). A direct scan is
+// O(n) per call → O(n²)+ for one full render, which is what makes large maps
+// crawl. During the hot synchronous operations (render, autoLayout) we build a
+// parent→children index once and serve childrenOf() from it in O(1). The index
+// is scoped to that operation — structure can't change mid-call — so there's no
+// staleness risk; outside the scope childrenOf falls back to the direct scan.
+let _ci = null;
+const EMPTY_KIDS = Object.freeze([]);
+function buildChildIndex(){
+  const idx = Object.create(null);
+  for(const id in map.nodes){
+    const p = map.nodes[id].parent;
+    if(p!=null){ (idx[p] || (idx[p]=[])).push(id); }
+  }
+  return idx;
+}
+function withChildIndex(fn){
+  const prev=_ci; _ci = buildChildIndex();
+  try { return fn(); } finally { _ci = prev; }
+}
+const childrenOf = id => _ci
+  ? (_ci[id] ? _ci[id].slice() : EMPTY_KIDS)             // O(children); no full scan
+  : Object.values(map.nodes).filter(n=>n.parent===id).map(n=>n.id);
 function countDesc(id){let c=0;const walk=i=>childrenOf(i).forEach(k=>{c++;walk(k)});walk(id);return c;}
+// One post-order pass computing, for every node, its descendant count and the
+// task roll-up (done/total among descendants). Lets render() look these up in
+// O(1) instead of re-walking each node's subtree. Call inside a child-index scope.
+function computeRollups(){
+  const desc=Object.create(null), tdone=Object.create(null), ttot=Object.create(null);
+  const stack=[[map.rootId,false]];
+  // iterative post-order to avoid deep recursion on very large/deep maps
+  const order=[]; const seen=new Set();
+  const dfs=[map.rootId];
+  while(dfs.length){ const id=dfs.pop(); order.push(id); for(const c of childrenOf(id)) dfs.push(c); }
+  for(let i=order.length-1;i>=0;i--){
+    const id=order[i]; let d=0,dn=0,tt=0;
+    for(const c of childrenOf(id)){
+      d += 1 + (desc[c]||0);
+      const ct=map.nodes[c] && map.nodes[c].task;
+      let cdn=tdone[c]||0, ctt=ttot[c]||0;
+      if(ct){ ctt++; if(ct==='done') cdn++; }
+      dn += cdn; tt += ctt;
+    }
+    desc[id]=d; tdone[id]=dn; ttot[id]=tt;
+  }
+  return {desc,tdone,ttot};
+}
 function hiddenSet(){
   const h=new Set();
+  // Use the active child index if we're inside a render/layout scope; otherwise
+  // build one locally so this is always O(n), never O(n²) (it's also called by
+  // fit/recenter/exportPNG/minimap, which run outside the render scope).
+  const idx = _ci || buildChildIndex();
   const walk=(id, hide)=>{
-    // If this node is collapsed (or we're already under a collapsed ancestor),
-    // hide all its descendants — starting with its direct children.
     const newHide = hide || !!map.nodes[id]?.collapsed;
-    childrenOf(id).forEach(c=>{
-      if(newHide) h.add(c);
-      walk(c, newHide);
-    });
+    const kids = idx[id]; if(!kids) return;
+    for(const c of kids){ if(newHide) h.add(c); walk(c, newHide); }
   };
   walk(map.rootId,false);
   return h;
@@ -923,8 +1025,15 @@ function balanceRootSides(){
 }
 function autoLayout(){
   if(!map) return;
-  // ensure sizes
-  render();
+  const _prevCI=_ci; _ci=buildChildIndex();   // O(1) childrenOf throughout layout
+  try{
+  // Ensure node sizes exist. Only (re)render to measure when some visible node
+  // hasn't been measured yet — on collapse/expand and most edits the sizes are
+  // already known, so we skip straight to positioning and a single final render.
+  const _hid=hiddenSet();
+  let _needMeasure=false;
+  for(const id in map.nodes){ if(!_hid.has(id) && !(map.nodes[id].w>0)){ _needMeasure=true; break; } }
+  if(_needMeasure) render();
   const root=map.nodes[map.rootId];
   root.side='root';
   const layout = map.layout || 'balanced';
@@ -1010,8 +1119,8 @@ function autoLayout(){
   leftSet.forEach(k=>{ const h=heightOf(k); const w=map.nodes[k].w||120; place(k, root.x-w-HGAP, lTop, -1); lTop+=h+VGAP; });
 
   render(); scheduleSave();
+  } finally { _ci=_prevCI; }
 }
-
 /* ============================================================
    NODE OPERATIONS
    ============================================================ */
@@ -1088,7 +1197,7 @@ function placeNewNodeNear(id){
 }
 function deleteNode(id){
   if(id===map.rootId) return;
-  const rm=[id]; const walk=i=>childrenOf(i).forEach(c=>{rm.push(c);walk(c)}); walk(id);
+  const rm=[id]; withChildIndex(()=>{ const walk=i=>childrenOf(i).forEach(c=>{rm.push(c);walk(c)}); walk(id); });
   const parent=map.nodes[id].parent;
   rm.forEach(r=>delete map.nodes[r]);
   pruneLinks(rm);
@@ -1260,10 +1369,12 @@ function bulkDelete(){
   const targets = [...multiSel].filter(id => id !== map.rootId);
   if(!targets.length){ toast('Can’t delete the root'); return; }
   const removed = new Set();
-  targets.forEach(id=>{
-    if(!map.nodes[id]) return;
-    const rm=[id]; const walk=i=>childrenOf(i).forEach(c=>{rm.push(c);walk(c)}); walk(id);
-    rm.forEach(r=>{ delete map.nodes[r]; removed.add(r); });
+  withChildIndex(()=>{
+    targets.forEach(id=>{
+      if(!map.nodes[id]) return;
+      const rm=[id]; const walk=i=>childrenOf(i).forEach(c=>{rm.push(c);walk(c)}); walk(id);
+      rm.forEach(r=>{ delete map.nodes[r]; removed.add(r); });
+    });
   });
   if(sel && removed.has(sel)) sel = map.rootId;
   pruneLinks(removed);
@@ -1277,19 +1388,21 @@ function startBulkReparent(){
 }
 function bulkReparent(targetId){
   let count = 0;
-  multiSel.forEach(id=>{
-    if(id===map.rootId) return;                 // can't reparent root
-    if(id===targetId) return;                    // skip self
-    if(isDescendant(targetId, id)) return;       // would create a cycle
-    const child = map.nodes[id]; if(!child) return;
-    child.parent = targetId;
-    // Inherit side from the new parent
-    let side;
-    if(targetId===map.rootId){ side = (count%2) ? 'left' : 'right'; }
-    else side = map.nodes[targetId].side || 'right';
-    const propagate=(nid,s)=>{ map.nodes[nid].side=s; childrenOf(nid).forEach(c=>propagate(c,s)); };
-    propagate(id, side);
-    count++;
+  withChildIndex(()=>{
+    multiSel.forEach(id=>{
+      if(id===map.rootId) return;                 // can't reparent root
+      if(id===targetId) return;                    // skip self
+      if(isDescendant(targetId, id)) return;       // would create a cycle
+      const child = map.nodes[id]; if(!child) return;
+      child.parent = targetId;
+      // Inherit side from the new parent
+      let side;
+      if(targetId===map.rootId){ side = (count%2) ? 'left' : 'right'; }
+      else side = map.nodes[targetId].side || 'right';
+      const propagate=(nid,s)=>{ map.nodes[nid].side=s; childrenOf(nid).forEach(c=>propagate(c,s)); };
+      propagate(id, side);
+      count++;
+    });
   });
   reparentMode = false;
   clearMultiSelect();
@@ -1808,8 +1921,7 @@ function positionNodeBar(){
       execCmd(cmd);
       ed.querySelector('.node-text')?.focus();
     } else {
-      map.nodes[sel][prop] = !map.nodes[sel][prop];
-      pushHistory(); render();
+      applyNodeStyle(sel, ()=>{ map.nodes[sel][prop] = !map.nodes[sel][prop]; });
     }
   };
   const toggleList = (kind) => {
@@ -1825,8 +1937,7 @@ function positionNodeBar(){
     } else {
       // Whole-node toggle (legacy behaviour, kept for users who haven't entered edit mode)
       const cur = map.nodes[sel].listType;
-      map.nodes[sel].listType = (cur===kind ? null : kind);
-      pushHistory(); render();
+      applyNodeStyle(sel, ()=>{ map.nodes[sel].listType = (cur===kind ? null : kind); });
     }
   };
   bar.querySelectorAll('button').forEach(b=>{
@@ -1853,16 +1964,16 @@ function positionNodeBar(){
           else attachImageToNode(sel);
         } else attachImageToNode(sel);
       }
-      else if(a==='size') showPicker(b,'size',fs,v=>{ map.nodes[sel].fontSize=v; pushHistory(); render(); });
-      else if(a==='align') showPicker(b,'align',n.align||'center',v=>{ map.nodes[sel].align=v; pushHistory(); render(); });
-      else if(a==='textColor') showPicker(b,'text',n.textColor,v=>{ map.nodes[sel].textColor=v; pushHistory(); render(); });
-      else if(a==='highlight') showPicker(b,'hilite',n.highlight,v=>{ map.nodes[sel].highlight=v; pushHistory(); render(); });
+      else if(a==='size') showPicker(b,'size',fs,v=>{ applyNodeStyle(sel, ()=>{ map.nodes[sel].fontSize=v; }); });
+      else if(a==='align') showPicker(b,'align',n.align||'center',v=>{ applyNodeStyle(sel, ()=>{ map.nodes[sel].align=v; }); });
+      else if(a==='textColor') showPicker(b,'text',n.textColor,v=>{ applyNodeStyle(sel, ()=>{ map.nodes[sel].textColor=v; }); });
+      else if(a==='highlight') showPicker(b,'hilite',n.highlight,v=>{ applyNodeStyle(sel, ()=>{ map.nodes[sel].highlight=v; }); });
     };
   });
   bar.querySelectorAll('.sw').forEach(s=>s.onclick=(ev)=>{
     ev.stopPropagation();
-    if(isRoot) map.color=s.dataset.c; else map.nodes[sel].color=s.dataset.c;
-    pushHistory(); render();
+    const target = isRoot ? map.rootId : sel;
+    applyNodeStyle(target, ()=>{ if(isRoot) map.color=s.dataset.c; else map.nodes[sel].color=s.dataset.c; });
   });
 }
 
@@ -1872,16 +1983,30 @@ function positionNodeBar(){
 let dragNode=null,dragStart=null,panning=false,panStart=null,moved=false;
 let resizing=null;     // {id, sx, sy, sw, sh}
 let dropTarget=null;   // id of node currently hovered as a reparent target
+let _dragHidden=null;  // hiddenSet() cached for the duration of a drag/resize gesture
+// Reposition the existing node toolbar without rebuilding it — cheap enough to
+// run on every drag/resize move (full positionNodeBar rebuilds DOM + listeners).
+function repositionNodeBar(){
+  const bar=document.getElementById('nodebar');
+  if(!bar || !sel || !map.nodes[sel]) return;
+  const n=map.nodes[sel];
+  bar.style.left=(n.x+(n.w||0)/2)+'px';
+  bar.style.top=(n.y+(n.h||40)+12/view.k)+'px';
+  bar.style.transform=`translateX(-50%) scale(${1/view.k})`;
+}
 
 // Snapshot positions of `id` and all its descendants so the whole subtree
 // can move together during a drag, then reset cleanly on cancel.
 function beginSubtreeDrag(id, mx, my){
   const subtree={};
   const collect = i => {
-    subtree[i] = { x: map.nodes[i].x, y: map.nodes[i].y };
+    // Cache the DOM element now so the per-move delta loop never has to run a
+    // querySelector (which scans the whole DOM) for each of potentially thousands
+    // of subtree nodes — that was the real drag bottleneck on large branches.
+    subtree[i] = { x: map.nodes[i].x, y: map.nodes[i].y, el: document.querySelector(`.node[data-id="${i}"]`) };
     childrenOf(i).forEach(collect);
   };
-  collect(id);
+  withChildIndex(()=>collect(id));   // O(1) childrenOf while collecting the subtree
   return { mx, my, root:id, subtree };
 }
 // Apply (dx,dy) delta to the whole subtree captured in start.subtree.
@@ -1890,8 +2015,7 @@ function applySubtreeDelta(start, dx, dy){
     const base = start.subtree[id];
     const n = map.nodes[id]; if(!n) continue;
     n.x = base.x + dx; n.y = base.y + dy;
-    const el = document.querySelector(`.node[data-id="${id}"]`);
-    if(el){ el.style.left = n.x+'px'; el.style.top = n.y+'px'; }
+    if(base.el){ base.el.style.left = n.x+'px'; base.el.style.top = n.y+'px'; }   // cached ref, no querySelector
   }
 }
 
@@ -1940,19 +2064,21 @@ function reparent(childId, newParentId){
   const child=map.nodes[childId];
   if(!child || child.parent===newParentId) return;
   child.parent=newParentId;
-  // Recompute side: root alternates left/right, otherwise inherit parent's side
-  let newSide;
-  if(newParentId===map.rootId){
-    const others=childrenOf(map.rootId).filter(c=>c!==childId).length;
-    newSide = others%2 ? 'left' : 'right';
-  } else {
-    newSide = map.nodes[newParentId].side || 'right';
-  }
-  const propagate=(id,side)=>{
-    map.nodes[id].side=side;
-    childrenOf(id).forEach(c=>propagate(c,side));
-  };
-  propagate(childId, newSide);
+  withChildIndex(()=>{
+    // Recompute side: root alternates left/right, otherwise inherit parent's side
+    let newSide;
+    if(newParentId===map.rootId){
+      const others=childrenOf(map.rootId).filter(c=>c!==childId).length;
+      newSide = others%2 ? 'left' : 'right';
+    } else {
+      newSide = map.nodes[newParentId].side || 'right';
+    }
+    const propagate=(id,side)=>{
+      map.nodes[id].side=side;
+      childrenOf(id).forEach(c=>propagate(c,side));
+    };
+    propagate(childId, newSide);
+  });
   // The tree changed shape — re-tidy. Stable layout keeps every other branch
   // exactly where it was and just slots the moved subtree cleanly into its new
   // parent, guaranteeing nothing overlaps.
@@ -2036,24 +2162,30 @@ stage.addEventListener('mousedown',e=>{
 });
 window.addEventListener('mousemove',e=>{
   if(resizing){
-    const sc=view.k*_uiZ();
-    const dx=(e.clientX-resizing.sx)/sc, dy=(e.clientY-resizing.sy)/sc;
-    const n=map.nodes[resizing.id];
-    n.width=Math.max(60, Math.round(resizing.sw+dx));
-    n.height=Math.max(30, Math.round(resizing.sh+dy));
-    const el=document.querySelector(`.node[data-id="${resizing.id}"]`);
-    if(el){ el.style.width=n.width+'px'; el.style.maxWidth='none'; el.style.height=n.height+'px'; n.w=n.width; n.h=n.height; }
-    drawEdges(hiddenSet());
-    positionNodeBar();
+    withChildIndex(()=>{
+      const sc=view.k*_uiZ();
+      const dx=(e.clientX-resizing.sx)/sc, dy=(e.clientY-resizing.sy)/sc;
+      const n=map.nodes[resizing.id];
+      n.width=Math.max(60, Math.round(resizing.sw+dx));
+      n.height=Math.max(30, Math.round(resizing.sh+dy));
+      const el=document.querySelector(`.node[data-id="${resizing.id}"]`);
+      if(el){ el.style.width=n.width+'px'; el.style.maxWidth='none'; el.style.height=n.height+'px'; n.w=n.width; n.h=n.height; }
+      if(!_dragHidden) _dragHidden=hiddenSet();   // collapse state is fixed during a gesture → compute once
+      drawEdges(_dragHidden);
+      repositionNodeBar();
+    });
   } else if(dragNode){
-    const sc=view.k*_uiZ();
-    const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
-    if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    applySubtreeDelta(dragStart, dx, dy);
-    drawEdges(hiddenSet());
-    positionNodeBar();
-    // Detect a drop target under the cursor (only after a real drag has started)
-    if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
+    withChildIndex(()=>{
+      const sc=view.k*_uiZ();
+      const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
+      if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+      applySubtreeDelta(dragStart, dx, dy);
+      if(!_dragHidden) _dragHidden=hiddenSet();
+      drawEdges(_dragHidden);
+      repositionNodeBar();
+      // Detect a drop target under the cursor (only after a real drag has started)
+      if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
+    });
   } else if(panning){
     const z=_uiZ();
     view.x=panStart.vx+(e.clientX-panStart.x)/z; view.y=panStart.vy+(e.clientY-panStart.y)/z;
@@ -2061,6 +2193,7 @@ window.addEventListener('mousemove',e=>{
   }
 });
 window.addEventListener('mouseup',()=>{
+  _dragHidden=null;                               // end of gesture — recompute next time
   if(resizing){
     resizing = null;
     // Re-tidy so the resized node's new footprint doesn't overlap its neighbours.
@@ -2136,13 +2269,16 @@ window.addEventListener('touchmove', e=>{
   if(e.touches.length!==1) return;
   const t=e.touches[0];
   if(dragNode){
-    const sc=view.k*_uiZ();
-    const dx=(t.clientX-dragStart.mx)/sc, dy=(t.clientY-dragStart.my)/sc;
-    if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    applySubtreeDelta(dragStart, dx, dy);
-    drawEdges(hiddenSet());
-    positionNodeBar();
-    if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(t.clientX, t.clientY));
+    withChildIndex(()=>{
+      const sc=view.k*_uiZ();
+      const dx=(t.clientX-dragStart.mx)/sc, dy=(t.clientY-dragStart.my)/sc;
+      if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+      applySubtreeDelta(dragStart, dx, dy);
+      if(!_dragHidden) _dragHidden=hiddenSet();
+      drawEdges(_dragHidden);
+      repositionNodeBar();
+      if(moved && dragNode!==map.rootId) setDropTarget(findDropTarget(t.clientX, t.clientY));
+    });
     e.preventDefault();
   } else if(panning){
     const z=_uiZ();
@@ -2156,6 +2292,7 @@ window.addEventListener('touchend', e=>{
   if(!e.touches) return;
   if(pinch && e.touches.length<2){ pinch=null; }
   if(e.touches.length>0) return;       // still touching
+  _dragHidden=null;                     // end of gesture
   if(dragNode){
     if(dropTarget && dragNode!==map.rootId){ reparent(dragNode, dropTarget); }
     else if(moved){ autoLayout(); pushHistory(); }
@@ -3929,7 +4066,7 @@ function assemblePrompt(rootId){
     if(note) lines.push(`${indent}  (${note})`);
     childrenOf(id).forEach(c=>walk(c, depth+1));
   };
-  walk(rootId, 0);
+  withChildIndex(()=>walk(rootId, 0));
   // Substitute any {{variables}} the map already has values for.
   let out=lines.join('\n');
   const vars=map.vars||{};
@@ -4117,21 +4254,28 @@ function importJSON(){ importFile(); }   // back-compat alias
 function importFile(){
   const inp=document.createElement('input');
   inp.type='file';
-  inp.accept='.json,.opml,.xml,.md,.markdown,.txt';
+  inp.accept='.json,.opml,.xml,.md,.markdown,.txt,.gmind';
   inp.onchange=async()=>{
     const f=inp.files[0]; if(!f) return;
-    const t=await f.text();
     const name=(f.name||'').toLowerCase();
     try{
-      let m;
-      if(name.endsWith('.json')) { m=JSON.parse(t); }
-      else if(name.endsWith('.opml')||name.endsWith('.xml')) { m=parseOPML(t, f.name); }
-      else { m=parseMarkdownOutline(t, f.name); }   // .md, .markdown, .txt
+      let m, preserveState=false;
+      if(name.endsWith('.gmind')) {
+        m = await parseGmind(await f.arrayBuffer(), f.name);
+        preserveState = true;                       // keep GitMind's own expand/collapse
+      } else {
+        const t=await f.text();
+        if(name.endsWith('.json')) { m=JSON.parse(t); }
+        else if(name.endsWith('.opml')||name.endsWith('.xml')) { m=parseOPML(t, f.name); }
+        else { m=parseMarkdownOutline(t, f.name); }   // .md, .markdown, .txt
+      }
       if(!m || !m.nodes || !m.rootId) throw new Error('No recognizable outline');
-      // Start collapsed so the user sees a clean top-level overview of the import.
-      Object.keys(m.nodes).forEach(id=>{
-        if(id !== m.rootId) m.nodes[id].collapsed = true;
-      });
+      if(!preserveState){
+        // Start collapsed so the user sees a clean top-level overview of the import.
+        Object.keys(m.nodes).forEach(id=>{
+          if(id !== m.rootId) m.nodes[id].collapsed = true;
+        });
+      }
       m.id=uid();
       await Store.save(m);
       await loadMap(m.id);
@@ -4139,7 +4283,7 @@ function importFile(){
       // proper tree, then frame the result.
       autoLayout(); fit();
       refreshList();
-      toast('Imported '+f.name+' (collapsed — click ＋ to expand)');
+      toast('Imported '+f.name + (preserveState?'':' (collapsed — click ＋ to expand)'));
     }catch(e){ console.error(e); alert('Could not import this file:\n'+e.message); }
   };
   inp.click();
@@ -4180,6 +4324,109 @@ function parseOPML(text, filename){
   tops.forEach((o, i) => walk(o, rootId, i%2 ? 'left' : 'right'));
   return { id:uid(), title, titleAuto:false, color:'#e0613a', rootId, nodes };
 }
+
+/* ============================================================
+   GitMind (.gmind) import
+   A .gmind file is a ZIP containing a single content.json — a nested tree
+   where each node has { data:{id,text,html,expanded,image,...}, style, children }.
+   We map it onto MindSpark's flat parent-pointer model, preserving rich text,
+   collapse state, the root's two-sided split, basic per-node styling, images
+   (as their original GitMind URLs) and relationship lines (as cross-links).
+   No external dependencies — the ZIP is read by hand; deflate (if present) uses
+   the platform DecompressionStream, matching the share-link code.
+   ============================================================ */
+async function _gmindUnzip(buf){
+  const dv=new DataView(buf), bytes=new Uint8Array(buf), dec=new TextDecoder();
+  // Locate the End Of Central Directory record (scan back from the tail).
+  let eocd=-1;
+  for(let i=bytes.length-22; i>=0 && i>bytes.length-22-65536; i--){
+    if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; }
+  }
+  if(eocd<0) throw new Error('This does not look like a .gmind file (no ZIP directory).');
+  const cdOffset=dv.getUint32(eocd+16,true), cdCount=dv.getUint16(eocd+10,true);
+  let p=cdOffset, target=null;
+  for(let e=0; e<cdCount; e++){
+    if(dv.getUint32(p,true)!==0x02014b50) break;
+    const method=dv.getUint16(p+10,true);
+    const compSize=dv.getUint32(p+20,true);
+    const fnLen=dv.getUint16(p+28,true);
+    const extraLen=dv.getUint16(p+30,true);
+    const commentLen=dv.getUint16(p+32,true);
+    const lho=dv.getUint32(p+42,true);
+    const nm=dec.decode(bytes.subarray(p+46, p+46+fnLen));
+    if(nm.endsWith('content.json')){ target={method,compSize,lho}; break; }
+    if(!target && nm.endsWith('.json')) target={method,compSize,lho};   // fallback
+    p+=46+fnLen+extraLen+commentLen;
+  }
+  if(!target) throw new Error('No content.json inside the .gmind file.');
+  const lh=target.lho;
+  if(dv.getUint32(lh,true)!==0x04034b50) throw new Error('Corrupt .gmind (bad local header).');
+  const dataStart=lh+30+dv.getUint16(lh+26,true)+dv.getUint16(lh+28,true);
+  const comp=bytes.subarray(dataStart, dataStart+target.compSize);
+  if(target.method===0) return dec.decode(comp);                   // stored, no compression
+  if(target.method===8){                                           // raw deflate
+    if(typeof DecompressionStream==='undefined')
+      throw new Error('This browser can\u2019t decompress the .gmind (no DecompressionStream).');
+    const ds=new DecompressionStream('deflate-raw');
+    return await new Response(new Blob([comp]).stream().pipeThrough(ds)).text();
+  }
+  throw new Error('Unsupported compression in .gmind (method '+target.method+').');
+}
+// GitMind stores rich text as block HTML (<p>…</p><p><br></p>…). MindSpark node
+// text is inline HTML, so fold paragraph/div breaks into <br> and drop block tags.
+function gmindHtmlToInline(html, plain){
+  if(!html) return escapeHtml((plain||'').trim());
+  let s=html;
+  s=s.replace(/<p>\s*<br\s*\/?>\s*<\/p>/gi,'\u0001');     // empty paragraph → blank line
+  s=s.replace(/<\/p>\s*<p[^>]*>/gi,'<br>');               // paragraph boundary → break
+  s=s.replace(/<\/?p[^>]*>/gi,'');                        // strip remaining <p>
+  s=s.replace(/<div[^>]*>/gi,'').replace(/<\/div>/gi,'<br>');
+  s=s.replace(/\u0001/g,'<br>');
+  s=s.replace(/(\s*<br\s*\/?>\s*){3,}/gi,'<br><br>');     // cap long break runs
+  s=s.replace(/^(?:\s*<br\s*\/?>)+/i,'').replace(/(?:<br\s*\/?>\s*)+$/i,'');
+  s=s.trim();
+  return typeof sanitizeInlineHTML==='function' ? sanitizeInlineHTML(s) : s;
+}
+function convertGmindToMap(d, filename){
+  const root = d && d.root;
+  if(!root || !root.data) throw new Error('Not a GitMind map (missing root node).');
+  const nodes={}, idMap={};
+  const title=(root.data.text||'').trim() || (filename||'').replace(/\.[^.]+$/,'') || 'Imported map';
+  const rootId=uid(); idMap[root.data.id]=rootId;
+  const conv=(n, parentId, side)=>{
+    const data=n.data||{}, st=n.style||{};
+    const id = parentId===null ? rootId : uid();
+    if(data.id) idMap[data.id]=id;
+    const node={ id, text: gmindHtmlToInline(data.html, data.text), parent:parentId, x:0, y:0, color:'#fff' };
+    node.side = parentId===null ? 'root' : (side||null);
+    if(data.expanded===false) node.collapsed=true;
+    const fs=Number(st['font-size']); if(fs && fs>=8 && fs!==20) node.fontSize=fs;
+    if(st['text-underline']) node.underline=true;
+    if(st['text-line-through']) node.strike=true;
+    if(data.image) node.image=data.image;                // original GitMind CDN URL
+    nodes[id]=node;
+    const kids=n.children||[];
+    const split = parentId===null ? (root.data.mindLayoutSplitIndex|0) : -1;
+    kids.forEach((c,i)=>{
+      const cs = parentId===null ? ((split>0 && i<split) ? 'right' : 'left') : side;
+      conv(c, id, cs);
+    });
+  };
+  conv(root, null, null);
+  const links=[];
+  (d.relLines||[]).forEach(rl=>{
+    const f=idMap[rl.from || rl.fromId || (rl.data&&rl.data.from)];
+    const t=idMap[rl.to   || rl.toId   || (rl.data&&rl.data.to)];
+    if(f && t && f!==t) links.push({from:f, to:t});
+  });
+  return { id:uid(), title, titleAuto:false, color:'#e0613a', rootId, nodes, links, vars:{} };
+}
+async function parseGmind(buf, filename){
+  const json=await _gmindUnzip(buf);
+  let d; try{ d=JSON.parse(json); }catch(e){ throw new Error('content.json is not valid JSON.'); }
+  return convertGmindToMap(d, filename);
+}
+
 // Parse a Markdown / plain-text outline (headings and/or nested bullets) into a map.
 function parseMarkdownOutline(text, filename){
   const title = (filename||'').replace(/\.[^.]+$/, '') || 'Imported';
@@ -4262,7 +4509,7 @@ function buildMermaid(startId){
       walk(c);
     });
   };
-  walk(root);
+  withChildIndex(()=>walk(root));
   // Colour the root node to match the map accent
   const accent = (map.color || '#e0613a');
   lines.push(`    style ${mid(root)} fill:${accent},color:#fff,stroke:${accent}`);
@@ -4315,7 +4562,7 @@ function buildMarkdown(startId){
     }
     childrenOf(id).forEach(c=>walk(c, depth+1));
   };
-  walk(root, baseDepth);
+  withChildIndex(()=>walk(root, baseDepth));
   return lines.join('\n');
 }
 
@@ -4342,7 +4589,7 @@ function findVariables(startId){
     if(n.notes) visit((n.notes||'').replace(/<[^>]+>/g,' '));
     childrenOf(id).forEach(walk);
   };
-  walk(root);
+  withChildIndex(()=>walk(root));
   return order;
 }
 // Replace {{var}} and ${var} occurrences inside `text` using the values map.
@@ -4927,7 +5174,8 @@ $('#collapseAll')?.addEventListener('click', ()=>{
   if(!map) return;
   // Exclude the root: collapsing it would hide the whole map, and including it
   // (always expanded) would break the expand/collapse toggle detection.
-  const collapsible = Object.keys(map.nodes).filter(id => id !== map.rootId && childrenOf(id).length > 0);
+  const collapsible = withChildIndex(()=>
+    Object.keys(map.nodes).filter(id => id !== map.rootId && childrenOf(id).length > 0));
   if(!collapsible.length) return;
   const anyExpanded = collapsible.some(id => !map.nodes[id].collapsed);
   collapsible.forEach(id => { map.nodes[id].collapsed = anyExpanded; });
@@ -5002,7 +5250,6 @@ function applyUiScale(v){
   const z = (v && v>=0.5 && v<=2) ? v : 1;
   document.documentElement.style.zoom = z!==1 ? String(z) : '';
   document.documentElement.style.setProperty('--ui-zoom', String(z));
-  _invalidateZoom();
 }
 function setUiScale(v){
   v = Math.min(2, Math.max(0.5, v||1));
@@ -5205,8 +5452,8 @@ const DONATE_CONFIG = {
   // UPI QR code — works on any device. Put the image as a data URL
   //   (paste a `data:image/png;base64,...` here)
   // or as an external URL (e.g., '/upi-qr.png' if you place the file in /public).
-  upiQr:   null,
-  upiNote: null,  // optional caption shown below the QR, e.g. "yourname@okicici"
+  upiQr:   '/upi-qr.png',
+  upiNote: 'prasadpatil252@okaxis',  // optional caption shown below the QR, e.g. "yourname@okicici"
   // GitHub Sponsors
   github:  null
 };
@@ -5588,9 +5835,6 @@ async function tryEnterSharedView(){
         nodes:payload.nodes||{}, links:payload.links||[], vars:payload.vars||{} };
   sel=null;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
-  // Grow the title field to fit the whole title (it's an <input>, which otherwise
-  // clips to its width) so shared maps show their full name, not a truncation.
-  $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
   showSharedBanner();
   // Lay out + fit once the page has actually been laid out. At initial boot the
