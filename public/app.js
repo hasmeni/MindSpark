@@ -133,17 +133,11 @@ const CloudStore = {
       const data=await r.json();
       this.shas[id]=data.sha;
       let json;
-      if(data.content && data.content.trim()){
-        json=this._decode(data.content);
-      } else if(data.git_url){
-        // Files larger than 1 MB come back from the Contents API with empty
-        // content — read them through the Git Blobs API instead (up to 100 MB).
-        const br=await fetch(data.git_url,{headers:this._headers()});
-        if(!br.ok) throw new Error('blob HTTP '+br.status);
-        json=this._decode((await br.json()).content);
-      } else {
-        throw new Error('empty content from GitHub');
-      }
+      // The Contents API only inlines base64 content for files up to 1 MB. Larger
+      // files come back with empty content (and encoding "none"), so we must read
+      // them another way — via the Git Blobs API (handles up to 100 MB).
+      const inlined = data.content && data.content.trim() && data.encoding!=='none';
+      json = inlined ? this._decode(data.content) : await this._readLargeBlob(data);
       const parsed=JSON.parse(json);
       try{ localStorage.setItem('mindspark:backup:'+id, json); }catch(e){}   // refresh local copy
       return parsed;
@@ -153,6 +147,23 @@ const CloudStore = {
       if(b){ console.warn('CloudStore.get: served local backup for', id); return b; }
       return null;
     }
+  },
+  // Read a file too large for the Contents API to inline (>1 MB). Prefer the Git
+  // Blobs API (returns base64, up to 100 MB); fall back to the raw download_url
+  // (plain text, no decode) if the blob endpoint is unavailable.
+  async _readLargeBlob(data){
+    if(data.git_url){
+      const br=await fetch(data.git_url,{headers:this._headers()});
+      if(br.ok){
+        const blob=await br.json();
+        if(blob && blob.content) return this._decode(blob.content);
+      }
+    }
+    if(data.download_url){
+      const dr=await fetch(data.download_url,{headers:this._headers()});
+      if(dr.ok) return await dr.text();   // raw JSON — already decoded
+    }
+    throw new Error('Could not read large map content (Blobs API + raw both failed)');
   },
   _localBackup(id){
     try{ const s=localStorage.getItem('mindspark:backup:'+id); return s?JSON.parse(s):null; }catch(e){ return null; }
@@ -196,7 +207,9 @@ const CloudStore = {
       const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/maps/${id}.json?ref=${encodeURIComponent(ref)}`,{headers:this._headers()});
       if(!r.ok) return null;
       const data=await r.json();
-      return JSON.parse(this._decode(data.content));
+      const inlined = data.content && data.content.trim() && data.encoding!=='none';
+      const json = inlined ? this._decode(data.content) : await this._readLargeBlob(data);
+      return JSON.parse(json);
     }catch(e){ console.warn('version', e); return null; }
   }
 };
