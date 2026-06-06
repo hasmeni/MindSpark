@@ -5835,6 +5835,9 @@ async function tryEnterSharedView(){
         nodes:payload.nodes||{}, links:payload.links||[], vars:payload.vars||{} };
   sel=null;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
+  // Grow the title field to fit the whole title (it's an <input>, which clips to
+  // its width) so shared maps show their full name, not a truncation.
+  $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
   showSharedBanner();
   // Lay out + fit once the page has actually been laid out. At initial boot the

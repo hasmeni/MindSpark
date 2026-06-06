@@ -180,7 +180,7 @@
   @keyframes pulse{50%{opacity:.3}}
 
   /* ===== Bottom controls ===== */
-  .zoombar{position:absolute;bottom:18px;right:18px;z-index:30;display:flex;flex-direction:column;gap:2px;background:var(--chrome);border:1px solid var(--chrome-edge);border-radius:12px;padding:4px;box-shadow:var(--shadow)}
+  .zoombar{position:fixed;bottom:18px;right:18px;z-index:30;display:flex;flex-direction:column;gap:2px;background:var(--chrome);border:1px solid var(--chrome-edge);border-radius:12px;padding:4px;box-shadow:var(--shadow)}
   .zoombar button{border:none;background:none;width:36px;height:34px;border-radius:8px;font-size:17px;color:var(--ink)}
   .zoombar button:hover{background:var(--hover)}
   .zoom-val{font-size:11px;text-align:center;color:var(--ink-soft);font-weight:600;padding:3px 4px;border-radius:5px;cursor:pointer;min-width:36px;outline:none}
@@ -1161,12 +1161,23 @@
   body.shared-view #donateBtn,
   body.shared-view .hint,
   body.shared-view .save-pill,
-  body.shared-view .menu-toggle{ display:none !important; }
+  body.shared-view .menu-toggle,
+  body.shared-view #addChild,
+  body.shared-view #toggleSide{ display:none !important; }
+  /* Sidebar is hidden in shared view — collapse the grid to one column so the
+     stage fills the full width (otherwise it auto-places into the 0-width
+     `auto` track and the canvas clips to nothing). */
+  body.shared-view .app{ grid-template-columns:1fr; }
   body.shared-view .stage{ top:42px; }          /* clear the banner */
   body.shared-view .topbar{ top:50px; }
   body.shared-view .breadcrumb{ top:96px; }
-  body.shared-view #mapTitle{ pointer-events:none; }
+  body.shared-view #mapTitle{ pointer-events:none; max-width:none; }
   body.shared-view .node{ cursor:default; }
+  /* Read-only: no editing affordances on nodes (keep the collapse/expand toggle
+     and the notes indicator, which are view actions). */
+  body.shared-view .handle.h-child,
+  body.shared-view .handle.h-sibling,
+  body.shared-view .resize-grip{ display:none !important; }
   @media (max-width:760px){
     .shared-banner{ font-size:12px; gap:8px; padding:8px 10px; }
     .shared-banner .sb-text{ flex:1; min-width:0; }
