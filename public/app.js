@@ -2035,21 +2035,58 @@ function findDropTarget(x,y){
     if(node && node.dataset && node.dataset.id){
       const tid=node.dataset.id;
       if(tid===dragNode) continue;
-      // Don't allow reparenting a node onto its own subtree (would create a cycle)
+      // Don't allow dropping a node onto its own subtree (would create a cycle)
       if(isDescendant(tid, dragNode)) continue;
-      return tid;
+      // Hovering the centre of a node nests as a child; hovering its top/bottom
+      // edge inserts as a sibling before/after it (reorder). Root only accepts
+      // nesting (it has no siblings).
+      let mode='on';
+      if(tid!==map.rootId){
+        const r=node.getBoundingClientRect();
+        const rel=(y-r.top)/(r.height||1);
+        if(rel<0.30) mode='before';
+        else if(rel>0.70) mode='after';
+      }
+      return {id:tid, mode};
     }
   }
   return null;
 }
-function setDropTarget(id){
-  if(id===dropTarget) return;
-  document.querySelectorAll('.node.drop-target').forEach(n=>n.classList.remove('drop-target'));
-  dropTarget=id;
+function setDropTarget(dt){
+  const id=dt&&dt.id, mode=(dt&&dt.mode)||'on';
+  if(dropTarget && dt && dropTarget.id===id && dropTarget.mode===mode) return;
+  document.querySelectorAll('.node.drop-target,.node.drop-before,.node.drop-after')
+    .forEach(n=>n.classList.remove('drop-target','drop-before','drop-after'));
+  dropTarget=dt||null;
   if(id){
     const el=document.querySelector(`.node[data-id="${id}"]`);
-    if(el) el.classList.add('drop-target');
+    if(el) el.classList.add(mode==='on'?'drop-target':(mode==='before'?'drop-before':'drop-after'));
   }
+}
+// Insert `dragId` as a sibling of `refId`, immediately before or after it,
+// reparenting if needed. This both reorders siblings and inserts between them.
+function insertSibling(dragId, refId, mode){
+  if(dragId===map.rootId || refId===map.rootId || dragId===refId) return;
+  if(isDescendant(refId, dragId)) return;        // can't drop into own subtree
+  const drag=map.nodes[dragId], ref=map.nodes[refId];
+  if(!drag || !ref) return;
+  const newParent=ref.parent; if(newParent==null) return;
+  drag.parent=newParent;
+  const side = (newParent===map.rootId) ? (ref.side||'right') : (map.nodes[newParent].side||'right');
+  const propagate=(id,sd)=>{ map.nodes[id].side=sd; childrenOf(id).forEach(c=>propagate(c,sd)); };
+  withChildIndex(()=>propagate(dragId, side));
+  // Rebuild map.nodes with dragId re-positioned right before/after refId. Sibling
+  // order is map.nodes key order, so this is how ordering is expressed.
+  const reordered={};
+  for(const k in map.nodes){
+    if(k===dragId) continue;                     // pulled out; re-inserted at target
+    if(k===refId && mode==='before') reordered[dragId]=drag;
+    reordered[k]=map.nodes[k];
+    if(k===refId && mode==='after') reordered[dragId]=drag;
+  }
+  if(!reordered[dragId]) reordered[dragId]=drag;
+  map.nodes=reordered;
+  pushHistory(); autoLayout();
 }
 // Re-parent a node and propagate the new side down its subtree
 function reparent(childId, newParentId){
@@ -2195,7 +2232,8 @@ window.addEventListener('mouseup',()=>{
   }
   if(dragNode){
     if(dropTarget && dragNode!==map.rootId){
-      reparent(dragNode, dropTarget);     // attach to the highlighted parent + tidy
+      if(dropTarget.mode==='on') reparent(dragNode, dropTarget.id);  // nest as child
+      else insertSibling(dragNode, dropTarget.id, dropTarget.mode);  // reorder / insert between
     } else if(moved){
       // Dropped in empty space (no new parent). Standard mind-map behaviour:
       // snap the tree back into its clean, non-overlapping arrangement.
@@ -2283,7 +2321,10 @@ window.addEventListener('touchend', e=>{
   if(pinch && e.touches.length<2){ pinch=null; }
   if(e.touches.length>0) return;       // still touching
   if(dragNode){
-    if(dropTarget && dragNode!==map.rootId){ reparent(dragNode, dropTarget); }
+    if(dropTarget && dragNode!==map.rootId){
+      if(dropTarget.mode==='on') reparent(dragNode, dropTarget.id);
+      else insertSibling(dragNode, dropTarget.id, dropTarget.mode);
+    }
     else if(moved){ autoLayout(); pushHistory(); }
     setDropTarget(null);
     dragNode=null;
@@ -2686,8 +2727,8 @@ async function refreshList(){
     const el=document.createElement('div');
     el.className='map-item'+(map&&m.id===map.id?' active':'');
     el.innerHTML=`<span class="dot" style="background:${m.color||'#e0613a'}"></span><span class="nm">${escapeHtml(m.title||'Untitled')}</span><button class="dup" title="Duplicate">⎘</button><button class="x" title="Delete">×</button>`;
-    el.querySelector('.nm').onclick=()=>loadMap(m.id);
-    el.querySelector('.dot').onclick=()=>loadMap(m.id);
+    el.style.cursor='pointer';
+    el.onclick=()=>{ if(!map || map.id!==m.id) loadMap(m.id); };
     el.querySelector('.dup').onclick=ev=>{ ev.stopPropagation(); duplicateMap(m.id); };
     el.querySelector('.x').onclick=async ev=>{ev.stopPropagation();
       if(!confirm('Delete "'+(m.title||'Untitled')+'"?'))return;
@@ -5339,7 +5380,7 @@ const THEMES = [
   {id:'dracula',         name:'Dracula',         swatch:['#282a36','#44475a','#ff79c6']},
   {id:'monokai',         name:'Monokai',         swatch:['#272822','#3e3d32','#f92672']},
   {id:'nord',            name:'Nord',            swatch:['#2e3440','#434c5e','#88c0d0']},
-  {id:'tokyo-night',     name:'Tokyo Night',     swatch:['#1a1b26','#24283b','#7aa2f7']},
+  {id:'github-light',    name:'GitHub Light',    swatch:['#ffffff','#f6f8fa','#0969da']},
   {id:'solarized-light', name:'Solarized Light', swatch:['#fdf6e3','#ffffff','#268bd2']},
   {id:'solarized-dark',  name:'Solarized Dark',  swatch:['#002b36','#073642','#268bd2']}
 ];

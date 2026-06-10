@@ -95,18 +95,18 @@
     --shadow:0 2px 4px rgba(0,0,0,.30),0 8px 24px rgba(0,0,0,.45);
     --shadow-lg:0 12px 40px rgba(0,0,0,.55);
   }
-  :root[data-theme="tokyo-night"]{
-    --toolbar-bg:#c0caf5; --toolbar-text:#1a1b26;
-    --paper:#1a1b26; --paper-2:#16161e; --ink:#c0caf5; --ink-soft:#7982a9;
-    --line:#2a2b3d; --line-2:#3b3c54;
-    --accent:#7aa2f7; --accent-deep:#5a82d7; --teal:#9ece6a;
-    --chrome:#16161e; --chrome-edge:#2a2b3d;
-    --node-bg:#24283b; --node-ink:#c0caf5;
-    --canvas-dot:#2a2b3d;
-    --stage-glow:rgba(122,162,247,.05);
-    --link:#7dcfff;
-    --shadow:0 2px 4px rgba(0,0,0,.30),0 8px 24px rgba(0,0,0,.45);
-    --shadow-lg:0 12px 40px rgba(0,0,0,.55);
+  :root[data-theme="github-light"]{
+    --toolbar-bg:#24292f; --toolbar-text:#ffffff;
+    --paper:#ffffff; --paper-2:#f6f8fa; --ink:#1f2328; --ink-soft:#656d76;
+    --line:#d0d7de; --line-2:#afb8c1;
+    --accent:#0969da; --accent-deep:#0a5cc0; --teal:#1a7f37;
+    --chrome:#f6f8fa; --chrome-edge:#d0d7de;
+    --node-bg:#ffffff; --node-ink:#1f2328;
+    --canvas-dot:#d8dee4;
+    --stage-glow:rgba(9,105,218,.04);
+    --link:#0969da;
+    --shadow:0 1px 3px rgba(31,35,40,.12),0 8px 24px rgba(31,35,40,.12);
+    --shadow-lg:0 12px 40px rgba(31,35,40,.18);
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;overflow:hidden;font-family:var(--sans);color:var(--ink);background:var(--paper)}
@@ -246,6 +246,8 @@
   .node.editing .resize-grip{display:none}
 
   /* Drop-target highlight while drag-and-drop reparenting */
+  .node.drop-before{ box-shadow:0 -3px 0 0 var(--accent), var(--shadow); }
+  .node.drop-after{ box-shadow:0 3px 0 0 var(--accent), var(--shadow); }
   .node.drop-target{
     outline:3px dashed var(--accent); outline-offset:5px;
     background:linear-gradient(0deg,
@@ -278,7 +280,7 @@
   /* ===== Notes editor — styled as a sticky note ===== */
   :root{ --sticky:#fff7b0; --sticky-edge:#f2e27a; --sticky-ink:#4a431f; }
   :root[data-theme="dark"], :root[data-theme="dracula"], :root[data-theme="monokai"],
-  :root[data-theme="nord"], :root[data-theme="tokyo-night"], :root[data-theme="solarized-dark"]{
+  :root[data-theme="nord"], :root[data-theme="solarized-dark"]{
     --sticky:#3a3520; --sticky-edge:#5c5430; --sticky-ink:#f3ecc4;
   }
   .notes-popup{
