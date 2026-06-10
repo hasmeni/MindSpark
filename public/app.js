@@ -1224,6 +1224,8 @@ function autoLayout(noRender){
   let leftSet=[], rightSet=[];
   if(layout==='right'){
     rightSet = kids.slice();
+  } else if(layout==='left'){
+    leftSet = kids.slice();
   } else {
     // BALANCED — but STABLE. Keep whatever side each child is already on so the
     // map never reshuffles on an unrelated edit; only freshly-added children
@@ -4162,7 +4164,7 @@ function exportMenu(){
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
-    <button data-a="buildprompt"><span class="ex-ic">✨</span><span><b>Build prompt from branch</b><i>Assemble a prompt — copy or run it</i></span></button>
+    <button data-a="buildprompt"><span class="ex-ic">✨</span><span><b>Compile subtree → prompt</b><i>Assemble the selected branch into a prompt</i></span></button>
     <div class="ex-div"></div>
     <button data-a="png"   ><span class="ex-ic">🖼</span><span><b>PNG image</b><i>Themed export, honors map style</i></span></button>
     <button data-a="prompt"><span class="ex-ic">⚡</span><span><b>Export as prompt</b><i>Fill variables, then copy clean text</i></span></button>
@@ -4246,15 +4248,51 @@ async function showVersionHistory(){
       <div class="hist-when"><b>${i===0?'Latest':relTime(v.ts)}</b><i>${new Date(v.ts).toLocaleString()}</i></div>
       <div class="hist-actions">
         <button class="hist-prev">Preview</button>
+        <button class="hist-diff">Diff</button>
         <button class="hist-restore${i===0?' disabled':''}"${i===0?' disabled':''}>Restore</button>
       </div>
     </div>`).join('');
   list.querySelectorAll('.hist-row').forEach(row=>{
     const ref=row.dataset.ref;
     row.querySelector('.hist-prev').onclick=()=>previewVersion(mapId, ref, row);
+    row.querySelector('.hist-diff').onclick=()=>diffVersion(mapId, ref);
     const rb=row.querySelector('.hist-restore');
     if(rb && !rb.disabled) rb.onclick=()=>restoreVersion(mapId, ref);
   });
+}
+// Compute node-level changes between an older map snapshot and a newer one.
+function diffMaps(oldMap, newMap){
+  const O=(oldMap&&oldMap.nodes)||{}, N=(newMap&&newMap.nodes)||{};
+  const plain=t=>nodeTextPlain(t||'').replace(/\s+/g,' ').trim();
+  const added=[], removed=[], changed=[];
+  for(const id in N){ if(!(id in O)) added.push(plain(N[id].text)); }
+  for(const id in O){ if(!(id in N)) removed.push(plain(O[id].text)); }
+  for(const id in N){ if(id in O){ const a=plain(O[id].text), b=plain(N[id].text); if(a!==b) changed.push({from:a,to:b}); } }
+  return {added, removed, changed};
+}
+async function diffVersion(mapId, ref){
+  const data=await Store.version(mapId, ref);
+  if(!data){ toast('Could not load that version'); return; }
+  const past=normalizeLoadedMap(data);
+  const current=_historyPreview ? _historyPreview.original : map;   // real current map
+  showDiffPanel(diffMaps(past, current));
+}
+function showDiffPanel(d){
+  document.querySelectorAll('.diff-panel').forEach(p=>p.remove());
+  const e=escapeHtml;
+  const sec=(title,items,cls)=> !items.length ? '' :
+    `<div class="diff-sec"><div class="diff-h ${cls}">${title} (${items.length})</div>`+
+    items.map(it=> typeof it==='string'
+      ? `<div class="diff-row ${cls}">${e(it||'(empty)')}</div>`
+      : `<div class="diff-row chg"><span class="d-from">${e(it.from||'(empty)')}</span><span class="d-arrow">\u2192</span><span class="d-to">${e(it.to||'(empty)')}</span></div>`
+    ).join('')+`</div>`;
+  const total=d.added.length+d.removed.length+d.changed.length;
+  const panel=document.createElement('div'); panel.className='diff-panel';
+  panel.innerHTML=`<div class="diff-head"><b>Changes since this version</b><button class="diff-x" title="Close">\u00d7</button></div>`+
+    (total ? sec('Added',d.added,'add')+sec('Removed',d.removed,'del')+sec('Edited',d.changed,'chg')
+           : `<div class="diff-empty">No differences \u2014 identical to the current map.</div>`);
+  document.body.appendChild(panel);
+  panel.querySelector('.diff-x').onclick=()=>panel.remove();
 }
 async function previewVersion(mapId, ref, row){
   const data=await Store.version(mapId, ref);
@@ -5180,6 +5218,116 @@ function exportDoc(){
   download(blob, filename);
   toast('Word document exported');
 }
+// --- Canvas math rendering (for PNG export) --------------------------------
+// A small layout engine that draws the MathML subset produced by latexToMathML
+// onto a 2D canvas (sub/superscripts, fractions, roots, accents). Used by the
+// PNG exporter so equations render properly instead of showing raw LaTeX source.
+function _layoutMath(ctx, el, fontPx, family, color){
+  const ASC=fontPx*0.72, DESC=fontPx*0.24;
+  const textBox=(str, italic)=>{
+    let f=(italic?'italic ':'')+fontPx+'px '+family;
+    ctx.font=f; const w=ctx.measureText(str).width;
+    return { w, asc:ASC, desc:DESC, draw:(x,base)=>{ ctx.save(); ctx.font=f; ctx.fillStyle=color; ctx.textBaseline='alphabetic'; ctx.textAlign='left'; ctx.fillText(str,x,base); ctx.restore(); } };
+  };
+  if(el.nodeType===3) return textBox(el.nodeValue||'', false);
+  const tag=(el.tagName||'').toLowerCase();
+  const kids=Array.from(el.childNodes);
+  const seq=()=>{
+    const parts=kids.map(k=>_layoutMath(ctx,k,fontPx,family,color));
+    const w=parts.reduce((s,p)=>s+p.w,0);
+    const asc=Math.max(ASC,...parts.map(p=>p.asc),0);
+    const desc=Math.max(DESC,...parts.map(p=>p.desc),0);
+    return { w, asc, desc, draw:(x,base)=>{ let cx=x; parts.forEach(p=>{ p.draw(cx,base); cx+=p.w; }); } };
+  };
+  if(tag==='math'||tag==='mrow'||tag==='mstyle'||tag==='') return seq();
+  if(tag==='mi'){ const t=el.textContent||''; return textBox(t, t.length===1 && /[a-zA-Z]/.test(t)); }
+  if(tag==='mn'||tag==='mo'||tag==='mtext') return textBox(el.textContent||'', false);
+  if(tag==='mspace'){ const em=parseFloat(el.getAttribute('width')||'0')||0; return { w:em*fontPx, asc:0, desc:0, draw:()=>{} }; }
+  if(tag==='msup'||tag==='msub'||tag==='msubsup'){
+    const base=_layoutMath(ctx,kids[0],fontPx,family,color);
+    const sf=fontPx*0.72;
+    let sup=null, sub=null;
+    if(tag==='msup') sup=_layoutMath(ctx,kids[1],sf,family,color);
+    else if(tag==='msub') sub=_layoutMath(ctx,kids[1],sf,family,color);
+    else { sub=_layoutMath(ctx,kids[1],sf,family,color); sup=_layoutMath(ctx,kids[2],sf,family,color); }
+    const supRise=fontPx*0.40, subDrop=fontPx*0.20;
+    const sw=Math.max(sup?sup.w:0, sub?sub.w:0);
+    return { w:base.w+sw+fontPx*0.04,
+      asc:Math.max(base.asc, supRise+(sup?sup.asc:0)),
+      desc:Math.max(base.desc, subDrop+(sub?sub.desc:0)),
+      draw:(x,b)=>{ base.draw(x,b); const sx=x+base.w; if(sup) sup.draw(sx,b-supRise); if(sub) sub.draw(sx,b+subDrop+sf*0.5); } };
+  }
+  if(tag==='mfrac'){
+    const num=_layoutMath(ctx,kids[0],fontPx*0.92,family,color);
+    const den=_layoutMath(ctx,kids[1],fontPx*0.92,family,color);
+    const pad=fontPx*0.18, gap=fontPx*0.18;
+    const w=Math.max(num.w,den.w)+pad*2;
+    const line=el.getAttribute('linethickness');
+    return { w, asc:num.asc+num.desc+gap+fontPx*0.28, desc:den.asc+den.desc+gap-fontPx*0.28,
+      draw:(x,b)=>{ const midY=b-fontPx*0.28;
+        num.draw(x+(w-num.w)/2, midY-gap-num.desc);
+        den.draw(x+(w-den.w)/2, midY+gap+den.asc);
+        if(line!=='0'){ ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=Math.max(1,fontPx*0.05); ctx.beginPath(); ctx.moveTo(x+pad*0.5,midY); ctx.lineTo(x+w-pad*0.5,midY); ctx.stroke(); ctx.restore(); } } };
+  }
+  if(tag==='msqrt'||tag==='mroot'){
+    const content=_layoutMath(ctx,kids[0],fontPx,family,color);
+    const lead=fontPx*0.62;
+    return { w:content.w+lead+fontPx*0.2, asc:content.asc+fontPx*0.12, desc:content.desc,
+      draw:(x,b)=>{ ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=Math.max(1,fontPx*0.06); ctx.beginPath();
+        const top=b-(content.asc+fontPx*0.12), bot=b+content.desc*0.4;
+        ctx.moveTo(x,b); ctx.lineTo(x+lead*0.4,bot); ctx.lineTo(x+lead*0.7,top); ctx.lineTo(x+content.w+lead+fontPx*0.2,top); ctx.stroke(); ctx.restore();
+        content.draw(x+lead,b); } };
+  }
+  if(tag==='mover'){
+    const base=_layoutMath(ctx,kids[0],fontPx,family,color);
+    const acc=_layoutMath(ctx,kids[1],fontPx*0.8,family,color);
+    return { w:Math.max(base.w,acc.w), asc:base.asc+fontPx*0.28, desc:base.desc,
+      draw:(x,b)=>{ base.draw(x,b); acc.draw(x+(base.w-acc.w)/2, b-base.asc-fontPx*0.05); } };
+  }
+  if(kids.length) return seq();
+  return textBox(el.textContent||'', false);
+}
+// Draw a node's text that contains $...$ math. Lines split on \n; each line is a
+// row of plain-text and math segments laid out horizontally, block centered on cy.
+function drawNodeMath(ctx, text, o){
+  const family=o.family, fontPx=o.fontPx, color=o.color;
+  ctx.save();
+  ctx.fillStyle=color;
+  const lines=(text||'').split('\n');
+  const re=new RegExp(MATH_DELIM_RE.source,'g');
+  const built=lines.map(line=>{
+    const segs=[]; let last=0,m; re.lastIndex=0;
+    const pushText=(s)=>{ if(!s) return; ctx.font=(o.bold?'bold ':'500 ')+fontPx+'px '+family; segs.push({type:'t',str:s,w:ctx.measureText(s).width,asc:fontPx*0.72,desc:fontPx*0.24}); };
+    while((m=re.exec(line))){
+      pushText(line.slice(last,m.index));
+      const tex=m[1]!=null?m[1]:m[2];
+      let mathEl=null; try{ const t=document.createElement('span'); t.innerHTML=latexToMathML(tex,false); mathEl=t.querySelector('math'); }catch(e){}
+      if(mathEl){ const lay=_layoutMath(ctx,mathEl,fontPx,family,color); segs.push({type:'m',lay,w:lay.w,asc:lay.asc,desc:lay.desc}); }
+      else pushText(m[0]);
+      last=m.index+m[0].length;
+    }
+    pushText(line.slice(last));
+    const w=segs.reduce((s,p)=>s+p.w,0);
+    const asc=Math.max(fontPx*0.72,...segs.map(s=>s.asc),0);
+    const desc=Math.max(fontPx*0.24,...segs.map(s=>s.desc),0);
+    return {segs,w,asc,desc};
+  });
+  const lineH=Math.max(...built.map(b=>b.asc+b.desc), fontPx*1.2)*1.1;
+  const totalH=lineH*built.length;
+  let cy=o.y - totalH/2;
+  built.forEach(b=>{
+    const baseline=cy+b.asc;
+    let x = o.align==='left' ? o.x : o.align==='right' ? (o.x+o.maxWidth-b.w) : (o.x+(o.maxWidth-b.w)/2);
+    b.segs.forEach(s=>{
+      if(s.type==='t'){ ctx.save(); ctx.font=(o.bold?'bold ':'500 ')+fontPx+'px '+family; ctx.fillStyle=color; ctx.textBaseline='alphabetic'; ctx.textAlign='left'; ctx.fillText(s.str,x,baseline); ctx.restore(); }
+      else s.lay.draw(x, baseline);
+      x+=s.w;
+    });
+    cy+=lineH;
+  });
+  ctx.restore();
+}
+
 function exportPNG(){
   render();
   // Read live theme colors from CSS custom properties so the export matches
@@ -5293,7 +5441,16 @@ function exportPNG(){
       const padX = isRoot ? 22 : 15;
       ctx.fillRect(n.x+padX-2, n.y+4, w-padX*2+4, h-8);
     }
-    // Render with inline B/I/U/S support, list bullets, line wrapping
+    // Render with inline B/I/U/S support, list bullets, line wrapping.
+    // Nodes with $...$ math go through the canvas math renderer so equations
+    // export as laid-out math instead of raw LaTeX source.
+    if(containsMath(n.text||'') && !n.listType){
+      drawNodeMath(ctx, n.text||'', {
+        x: n.x+(isRoot?22:15), y: n.y+h/2, maxWidth: w-(isRoot?44:30),
+        fontPx, color: textFill, family: '"Bricolage Grotesque", sans-serif',
+        bold: !!n.bold || isRoot, align: n.align || 'center'
+      });
+    } else {
     drawFormattedText(ctx, n.text||'', {
       x: n.x+(isRoot?22:15),
       y: n.y+h/2,
@@ -5308,6 +5465,7 @@ function exportPNG(){
       align: n.align || 'center',
       listType: n.listType || null
     });
+    }
     // Notes indicator — small white-circle dot with a 📝 glyph (top-right)
     const noteText = (n.notes||'').replace(/<[^>]*>/g,'').trim();
     if(noteText){
@@ -5584,6 +5742,7 @@ const MAP_STYLES = [
 const MAP_LAYOUTS = [
   {id:'balanced', name:'Balanced', desc:'Branches split left & right'},
   {id:'right',    name:'Right',    desc:'All branches grow right'},
+  {id:'left',     name:'Left',     desc:'All branches grow left'},
   {id:'down',     name:'Down',     desc:'Org-chart, top to bottom'}
 ];
 
@@ -5606,6 +5765,7 @@ function applyMapLayout(id){
   withChildIndex(()=>{
     if(id==='balanced') balanceRootSides();
     else if(id==='right') childrenOf(map.rootId).forEach(k=>{ map.nodes[k].side='right'; });
+    else if(id==='left') childrenOf(map.rootId).forEach(k=>{ map.nodes[k].side='left'; });
   });
   pushHistory(); autoLayout(); fit();
 }
@@ -5643,6 +5803,13 @@ function buildLayoutThumb(id){
     <rect x="28" y="36" width="14" height="10" rx="2" fill="var(--node-bg,#fff)" stroke="var(--line)"/>
     <rect x="48" y="36" width="14" height="10" rx="2" fill="var(--node-bg,#fff)" stroke="var(--line)"/>
     <path d="M35,16 L35,26 L15,26 L15,36 M35,26 L35,36 M35,26 L55,26 L55,36" fill="none" stroke="var(--ink-soft)" stroke-width="1.2"/>
+  </svg>`;
+  else if(id==='left') svg=`<svg viewBox="0 0 70 60" width="70" height="40">
+    <rect x="50" y="22" width="14" height="12" rx="2" fill="var(--accent)"/>
+    <rect x="6"  y="6"  width="16" height="10" rx="2" fill="var(--node-bg,#fff)" stroke="var(--line)"/>
+    <rect x="6"  y="22" width="16" height="10" rx="2" fill="var(--node-bg,#fff)" stroke="var(--line)"/>
+    <rect x="6"  y="38" width="16" height="10" rx="2" fill="var(--node-bg,#fff)" stroke="var(--line)"/>
+    <path d="M50,28 C38,28 30,11 22,11 M50,28 L22,27 M50,28 C38,28 30,43 22,43" fill="none" stroke="var(--ink-soft)" stroke-width="1.2"/>
   </svg>`;
   else if(id==='right') svg=`<svg viewBox="0 0 70 60" width="70" height="40">
     <rect x="6"  y="22" width="14" height="12" rx="2" fill="var(--accent)"/>

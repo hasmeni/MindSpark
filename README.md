@@ -8,14 +8,19 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 
 - **Infinite canvas** with smooth pan & zoom, fit-to-screen
 - **Keyboard-first editing** — `Tab` for child, `Enter` for sibling, `F2` to rename, `Del` to remove, start typing to edit
-- **Auto-layout** — tidy, balanced left/right tree arrangement at one click
-- **Drag-to-reposition** any topic; collapse / expand branches
-- **Color themes** per node + per map
-- **Undo / redo** (full history)
-- **Search & highlight** topics
-- **Multiple maps** with a sidebar; create, rename, delete
-- **Auto-save** to your database
-- **Export** to **PNG** and **JSON**; **import** JSON
+- **Live auto-layout** — the tree tidies itself as you type, so a growing node never overlaps its neighbours
+- **Drag-and-drop reordering** — drop a topic on another's centre to nest it, or on its top/bottom edge to insert it between siblings and reorder
+- **Layout options** — Balanced (split left/right), Right, **Left**, or Down (org-chart)
+- **Math** — write `$...$` (inline) or `$$...$$` (display) LaTeX and it renders as native **MathML**; equations also render in PNG exports. Zero dependencies — covers the common inline subset (sub/superscripts, Greek, operators, `\frac`, `\sqrt`, accents, fonts, function names)
+- **Prompt building** — *Compile subtree → prompt*: assemble any branch into a prompt, substitute `{{variables}}`, see the token estimate, then copy or run it
+- **Version history** — browse, **diff** (added / removed / edited nodes), preview, and restore past versions
+- **Rich text & nodes** — bold/italic/underline, lists, links, notes, images, citations, task progress
+- **Color themes** per node + per map, incl. **GitHub Light** and other light/dark themes
+- **Undo / redo** (full history) · **search & highlight** · **presentation mode**
+- **Multiple maps** with a clickable sidebar; create, rename, duplicate, delete
+- **Auto-save** to your database (or to a private GitHub repo in cloud mode)
+- **Import** JSON, OPML, Markdown, GitMind (`.gmind`) and MindMeister (`.mind`) files
+- **Export** to PNG, JSON, Markdown/text, Word (`.doc`), Mermaid, a references list, or a prompt
 - **Database persistence** — every map is stored in SQLite
 - **Zero dependencies** — runs on a bare Node.js install, even offline
 
