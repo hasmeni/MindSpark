@@ -2101,11 +2101,11 @@ function setDropTarget(dt){
 // Insert `dragId` as a sibling of `refId`, immediately before or after it,
 // reparenting if needed. This both reorders siblings and inserts between them.
 function insertSibling(dragId, refId, mode){
-  if(dragId===map.rootId || refId===map.rootId || dragId===refId) return;
-  if(isDescendant(refId, dragId)) return;        // can't drop into own subtree
+  if(dragId===map.rootId || refId===map.rootId || dragId===refId) return false;
+  if(isDescendant(refId, dragId)) return false;        // can't drop into own subtree
   const drag=map.nodes[dragId], ref=map.nodes[refId];
-  if(!drag || !ref) return;
-  const newParent=ref.parent; if(newParent==null) return;
+  if(!drag || !ref) return false;
+  const newParent=ref.parent; if(newParent==null) return false;
   drag.parent=newParent;
   const side = (newParent===map.rootId) ? (ref.side||'right') : (map.nodes[newParent].side||'right');
   const propagate=(id,sd)=>{ map.nodes[id].side=sd; childrenOf(id).forEach(c=>propagate(c,sd)); };
@@ -2122,14 +2122,15 @@ function insertSibling(dragId, refId, mode){
   if(!reordered[dragId]) reordered[dragId]=drag;
   map.nodes=reordered;
   pushHistory(); autoLayout();
+  return true;
 }
 // Re-parent a node and propagate the new side down its subtree
 function reparent(childId, newParentId){
-  if(childId===map.rootId) return;       // can't re-parent the root
-  if(childId===newParentId) return;
-  if(isDescendant(newParentId, childId)) return;
+  if(childId===map.rootId) return false;       // can't re-parent the root
+  if(childId===newParentId) return false;
+  if(isDescendant(newParentId, childId)) return false;
   const child=map.nodes[childId];
-  if(!child || child.parent===newParentId) return;
+  if(!child || child.parent===newParentId) return false;  // dropped on its current parent — nothing to do
   child.parent=newParentId;
   // Recompute side: root alternates left/right, otherwise inherit parent's side
   let newSide;
@@ -2149,6 +2150,7 @@ function reparent(childId, newParentId){
   // parent, guaranteeing nothing overlaps.
   pushHistory(); autoLayout();
   toast('Re-parented to "'+(map.nodes[newParentId].text||'…')+'"');
+  return true;
 }
 // Reposition an existing subtree to sit cleanly as a child of `parentId`,
 // shifting the whole subtree rigidly (preserves its internal arrangement).
@@ -2267,8 +2269,11 @@ window.addEventListener('mouseup',()=>{
   }
   if(dragNode){
     if(dropTarget && dragNode!==map.rootId){
-      if(dropTarget.mode==='on') reparent(dragNode, dropTarget.id);  // nest as child
-      else insertSibling(dragNode, dropTarget.id, dropTarget.mode);  // reorder / insert between
+      const did = (dropTarget.mode==='on') ? reparent(dragNode, dropTarget.id)        // nest as child
+                                           : insertSibling(dragNode, dropTarget.id, dropTarget.mode); // reorder / insert between
+      // No-op drop (e.g. dropped back onto its current parent): the drag left the
+      // node at the drop position, so tidy it back into place instead of overlapping.
+      if(!did && moved){ autoLayout(); }
     } else if(moved){
       // Dropped in empty space (no new parent). Standard mind-map behaviour:
       // snap the tree back into its clean, non-overlapping arrangement.
@@ -2357,8 +2362,9 @@ window.addEventListener('touchend', e=>{
   if(e.touches.length>0) return;       // still touching
   if(dragNode){
     if(dropTarget && dragNode!==map.rootId){
-      if(dropTarget.mode==='on') reparent(dragNode, dropTarget.id);
-      else insertSibling(dragNode, dropTarget.id, dropTarget.mode);
+      const did = (dropTarget.mode==='on') ? reparent(dragNode, dropTarget.id)
+                                           : insertSibling(dragNode, dropTarget.id, dropTarget.mode);
+      if(!did && moved){ autoLayout(); }   // snap back on a no-op drop
     }
     else if(moved){ autoLayout(); pushHistory(); }
     setDropTarget(null);
