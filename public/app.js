@@ -671,11 +671,161 @@ const NOTES_TAGS = ['h1','h2','h3','blockquote'];
 // promote a hidden <script> to the top level where a snapshotted loop misses it.
 const DROP_TAGS = new Set(['script','style','iframe','object','embed','noscript','svg','math','template','link','meta','base','frame','frameset','title','xmp']);
 function sanitizeNotes(html){ return sanitizeInlineHTML(html, NOTES_TAGS); }
+// ---------------------------------------------------------------------------
+// Minimal, dependency-free LaTeX -> MathML converter. Covers the common inline
+// subset: sub/superscripts, Greek, operators/relations/arrows/sets, \frac,
+// \sqrt (+ optional index), accents, math fonts, function names, spacing.
+// NOT full LaTeX (no matrices / aligned environments / sized limits). Output is
+// assembled only from a fixed MathML vocabulary with every literal escaped, so
+// it never echoes user HTML and is safe to inject (bypassing the HTML sanitizer
+// which intentionally drops user-supplied <math>/<svg>).
+// ---------------------------------------------------------------------------
+const MATH_GREEK = {
+  alpha:'\u03b1',beta:'\u03b2',gamma:'\u03b3',delta:'\u03b4',epsilon:'\u03f5',varepsilon:'\u03b5',
+  zeta:'\u03b6',eta:'\u03b7',theta:'\u03b8',vartheta:'\u03d1',iota:'\u03b9',kappa:'\u03ba',
+  lambda:'\u03bb',mu:'\u03bc',nu:'\u03bd',xi:'\u03be',pi:'\u03c0',varpi:'\u03d6',rho:'\u03c1',
+  varrho:'\u03f1',sigma:'\u03c3',varsigma:'\u03c2',tau:'\u03c4',upsilon:'\u03c5',phi:'\u03d5',
+  varphi:'\u03c6',chi:'\u03c7',psi:'\u03c8',omega:'\u03c9',
+  Gamma:'\u0393',Delta:'\u0394',Theta:'\u0398',Lambda:'\u039b',Xi:'\u039e',Pi:'\u03a0',
+  Sigma:'\u03a3',Upsilon:'\u03a5',Phi:'\u03a6',Psi:'\u03a8',Omega:'\u03a9'
+};
+const MATH_OP = {
+  dagger:'\u2020',ddagger:'\u2021',times:'\u00d7',div:'\u00f7',cdot:'\u22c5',ast:'\u2217',
+  star:'\u22c6',circ:'\u2218',bullet:'\u2219',pm:'\u00b1',mp:'\u2213',oplus:'\u2295',
+  ominus:'\u2296',otimes:'\u2297',oslash:'\u2298',odot:'\u2299',
+  leq:'\u2264',le:'\u2264',geq:'\u2265',ge:'\u2265',neq:'\u2260',ne:'\u2260',approx:'\u2248',
+  equiv:'\u2261',cong:'\u2245',sim:'\u223c',simeq:'\u2243',propto:'\u221d',ll:'\u226a',gg:'\u226b',
+  leftarrow:'\u2190',rightarrow:'\u2192',to:'\u2192',gets:'\u2190',leftrightarrow:'\u2194',
+  Leftarrow:'\u21d0',Rightarrow:'\u21d2',Leftrightarrow:'\u21d4',mapsto:'\u21a6',
+  uparrow:'\u2191',downarrow:'\u2193',implies:'\u27f9',iff:'\u27fa',
+  in:'\u2208',notin:'\u2209',ni:'\u220b',subset:'\u2282',subseteq:'\u2286',supset:'\u2283',
+  supseteq:'\u2287',cup:'\u222a',cap:'\u2229',setminus:'\u2216',emptyset:'\u2205',varnothing:'\u2205',
+  forall:'\u2200',exists:'\u2203',nexists:'\u2204',neg:'\u00ac',lnot:'\u00ac',land:'\u2227',
+  wedge:'\u2227',lor:'\u2228',vee:'\u2228',
+  langle:'\u27e8',rangle:'\u27e9',lfloor:'\u230a',rfloor:'\u230b',lceil:'\u2308',rceil:'\u2309',
+  sum:'\u2211',prod:'\u220f',coprod:'\u2210',int:'\u222b',oint:'\u222e',iint:'\u222c',iiint:'\u222d',
+  partial:'\u2202',nabla:'\u2207',angle:'\u2220',perp:'\u22a5',parallel:'\u2225',mid:'\u2223',
+  cdots:'\u22ef',ldots:'\u2026',dots:'\u2026',vdots:'\u22ee',ddots:'\u22f1',prime:'\u2032'
+};
+const MATH_ID = { infty:'\u221e',hbar:'\u210f',ell:'\u2113',Re:'\u211c',Im:'\u2111',aleph:'\u2135',wp:'\u2118' };
+const MATH_FUNCS = new Set(['sin','cos','tan','cot','sec','csc','sinh','cosh','tanh','log','ln','lg',
+  'exp','lim','limsup','liminf','max','min','sup','inf','arg','det','dim','ker','deg','gcd','hom','Pr',
+  'arcsin','arccos','arctan','mod']);
+const MATH_ACCENT = { hat:'\u005e',widehat:'\u005e',tilde:'\u007e',widetilde:'\u007e',bar:'\u203e',
+  overline:'\u203e',vec:'\u2192',dot:'\u02d9',ddot:'\u00a8',acute:'\u00b4',grave:'\u0060',check:'\u02c7',breve:'\u02d8' };
+const MATH_FONT = { mathbb:'double-struck',mathcal:'script',mathfrak:'fraktur',mathbf:'bold',
+  boldsymbol:'bold',mathrm:'normal',mathsf:'sans-serif',mathtt:'monospace',mathit:'italic' };
+const MATH_SPACE = { ',':'0.17em',':':'0.22em',';':'0.28em','!':'-0.17em',quad:'1em',qquad:'2em' };
+
+function _mathEsc(x){ return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function latexToMathML(src, display){
+  let i=0; const s=src||'';
+  const mrow = a => a.length===1 ? a[0] : '<mrow>'+a.join('')+'</mrow>';
+  const EMPTY='<mrow></mrow>';
+  function skipWs(){ while(i<s.length && /\s/.test(s[i])) i++; }
+  function readGroup(){ skipWs(); if(s[i]==='{'){ i++; return mrow(parseList('}')); } return parseAtom()||EMPTY; }
+  function readRaw(){ skipWs(); if(s[i]!=='{'){ const c=s[i++]; return c||''; } i++; let d=1,out='';
+    while(i<s.length && d>0){ const c=s[i++]; if(c==='{')d++; else if(c==='}'){ d--; if(d===0)break; } out+=c; } return out; }
+  function parseCommand(){
+    i++; let name='';
+    if(/[a-zA-Z]/.test(s[i])){ while(i<s.length && /[a-zA-Z]/.test(s[i])) name+=s[i++]; } else { name=s[i++]||''; }
+    if(name==='frac'||name==='tfrac'||name==='dfrac'){ const a=readGroup(),b=readGroup(); return '<mfrac>'+a+b+'</mfrac>'; }
+    if(name==='binom'){ const a=readGroup(),b=readGroup(); return '<mrow><mo>(</mo><mfrac linethickness="0">'+a+b+'</mfrac><mo>)</mo></mrow>'; }
+    if(name==='sqrt'){ let idx=null; skipWs(); if(s[i]==='['){ i++; idx=mrow(parseList(']')); } const a=readGroup(); return idx? '<mroot>'+a+idx+'</mroot>' : '<msqrt>'+a+'</msqrt>'; }
+    if(MATH_ACCENT[name]){ const a=readGroup(); return '<mover accent="true">'+a+'<mo>'+_mathEsc(MATH_ACCENT[name])+'</mo></mover>'; }
+    if(MATH_FONT[name]){ const raw=readRaw(); return '<mi mathvariant="'+MATH_FONT[name]+'">'+_mathEsc(raw)+'</mi>'; }
+    if(name==='text'||name==='textrm'||name==='textbf'||name==='mbox'){ const raw=readRaw(); return '<mtext>'+_mathEsc(raw)+'</mtext>'; }
+    if(name==='operatorname'){ const raw=readRaw(); return '<mi mathvariant="normal">'+_mathEsc(raw)+'</mi>'; }
+    if(name==='left'||name==='right'){ skipWs(); const d=s[i++]||''; if(d==='.') return ''; return '<mo stretchy="true">'+_mathEsc(d)+'</mo>'; }
+    if(MATH_SPACE[name]!==undefined){ return '<mspace width="'+MATH_SPACE[name]+'"/>'; }
+    if(MATH_OP[name]!==undefined){ return '<mo>'+_mathEsc(MATH_OP[name])+'</mo>'; }
+    if(MATH_ID[name]!==undefined){ return '<mi>'+_mathEsc(MATH_ID[name])+'</mi>'; }
+    if(MATH_GREEK[name]!==undefined){ return '<mi>'+_mathEsc(MATH_GREEK[name])+'</mi>'; }
+    if(MATH_FUNCS.has(name)){ return '<mi>'+_mathEsc(name)+'</mi>'; }
+    if(name==='\\'){ return '<mspace linebreak="newline"/>'; }
+    return '<mtext>\\'+_mathEsc(name)+'</mtext>';
+  }
+  function parseAtom(){
+    const ch=s[i]; if(ch===undefined) return '';
+    if(ch==='{'){ i++; return mrow(parseList('}')); }
+    if(ch==='\\') return parseCommand();
+    i++;
+    if(/\s/.test(ch)) return '';
+    if(ch>='0'&&ch<='9'){ let num=ch; while(i<s.length && /[0-9.]/.test(s[i])) num+=s[i++]; return '<mn>'+num+'</mn>'; }
+    if(/[a-zA-Z]/.test(ch)) return '<mi>'+ch+'</mi>';
+    if(ch==='-') return '<mo>\u2212</mo>';
+    if(ch==="'") return '<mo>\u2032</mo>';
+    return '<mo>'+_mathEsc(ch)+'</mo>';
+  }
+  function parseList(stop){
+    const out=[];
+    while(i<s.length){
+      const ch=s[i];
+      if(stop && ch===stop){ i++; break; }
+      if(!stop && ch==='}'){ break; }
+      if(ch==='_'||ch==='^'){
+        i++; skipWs();
+        const base=out.length?out.pop():EMPTY; let sub=null,sup=null;
+        if(ch==='_'){ sub=readGroup(); skipWs(); if(s[i]==='^'){ i++; skipWs(); sup=readGroup(); } }
+        else { sup=readGroup(); skipWs(); if(s[i]==='_'){ i++; skipWs(); sub=readGroup(); } }
+        if(sub!=null && sup!=null) out.push('<msubsup>'+base+sub+sup+'</msubsup>');
+        else if(sub!=null) out.push('<msub>'+base+sub+'</msub>');
+        else out.push('<msup>'+base+sup+'</msup>');
+        continue;
+      }
+      const a=parseAtom(); if(a) out.push(a);
+    }
+    return out;
+  }
+  const body = mrow(parseList(null));
+  return '<math xmlns="http://www.w3.org/1998/Math/MathML"'+(display?' display="block"':'')+'>'+body+'</math>';
+}
+
+// $$...$$ (display) or $...$ (inline, no leading/trailing space to avoid matching prose like "$5 ... $10")
+const MATH_DELIM_RE = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]+?)(?<!\s)\$/;
+function containsMath(text){
+  if(!text || text.indexOf('$')<0) return false;
+  return new RegExp(MATH_DELIM_RE.source).test(text);
+}
+// Render `text` into `container`, converting $...$ / $$...$$ to MathML while
+// passing the surrounding text through the normal (sanitized) rendering path.
+function appendMathAware(container, text){
+  const re=new RegExp(MATH_DELIM_RE.source,'g');
+  let last=0, m;
+  const plain=(str)=>{
+    if(!str) return;
+    if(hasInlineMarkup(str)){
+      const span=document.createElement('span');
+      span.innerHTML=sanitizeInlineHTML(str);
+      autoLinkPlainTextNodes(span);
+      while(span.firstChild) container.appendChild(span.firstChild);
+    } else { appendTextWithLinks(container, str); }
+  };
+  while((m=re.exec(text))){
+    plain(text.slice(last, m.index));
+    const tex = m[1]!=null ? m[1] : m[2];
+    const display = m[1]!=null;
+    let mathml=null; try{ mathml=latexToMathML(tex, display); }catch(e){ mathml=null; }
+    if(mathml){
+      const tmp=document.createElement('span');
+      tmp.innerHTML = mathml;                 // HTML5 parses <math> as MathML foreign content
+      while(tmp.firstChild) container.appendChild(tmp.firstChild);
+    } else { container.appendChild(document.createTextNode(m[0])); }
+    last = m.index + m[0].length;
+  }
+  plain(text.slice(last));
+}
+
 function renderNodeText(container, text, listType){
   container.textContent='';
   const isHTML = hasInlineMarkup(text);
   if(!listType){
-    if(isHTML){
+    if(containsMath(text)){
+      // Inline/display LaTeX ($...$, $$...$$) -> native MathML; surrounding text
+      // still goes through the normal sanitized rendering path.
+      appendMathAware(container, text);
+    } else if(isHTML){
       container.innerHTML = sanitizeInlineHTML(text);
       // Auto-link any remaining plain-text URLs inside (skip text already inside <a>)
       autoLinkPlainTextNodes(container);

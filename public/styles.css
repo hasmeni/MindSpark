@@ -417,6 +417,8 @@
   .nodebar button .A-mark{font-family:var(--serif);font-weight:700;font-size:13px;line-height:1;display:inline-block;padding-bottom:1px}
   .nodebar button b,.nodebar button s,.nodebar button u,.nodebar button i{font-family:var(--serif);font-size:14px}
   .nodebar button i{font-style:italic}
+  .node-text math{ font-size:1.04em; }
+  .node-text math[display="block"]{ display:block; margin:3px auto; }
   .node-text{min-width:0;max-width:100%}
   .node-text .node-link{color:var(--link,var(--accent));text-decoration:underline;text-underline-offset:2px;cursor:pointer;word-break:break-all}
   .node-text .node-link:hover{color:var(--accent-deep)}
