@@ -1031,7 +1031,7 @@ function balanceRootSides(){
   const half=Math.ceil(kids.length/2);
   kids.forEach((k,i)=>{ map.nodes[k].side = (i<half) ? 'right' : 'left'; });
 }
-function autoLayout(){
+function autoLayout(noRender){
   if(!map) return;
   const _prevCI=_ci; _ci=buildChildIndex();   // O(1) childrenOf for the whole layout
   try{
@@ -1040,7 +1040,7 @@ function autoLayout(){
   // collapse/expand — the single biggest cost when expanding a large branch.
   const _hid=hiddenSet(); let _needMeasure=false;
   for(const id in map.nodes){ if(!_hid.has(id) && !(map.nodes[id].w>0)){ _needMeasure=true; break; } }
-  if(_needMeasure) render();
+  if(!noRender && _needMeasure) render();
   const root=map.nodes[map.rootId];
   root.side='root';
   const layout = map.layout || 'balanced';
@@ -1066,7 +1066,7 @@ function autoLayout(){
     const assign = id => { map.nodes[id].side='down'; childrenOf(id).forEach(assign); };
     childrenOf(map.rootId).forEach(assign);
     place(map.rootId, 0, 0);
-    render(); scheduleSave(); return;
+    if(!noRender){ render(); scheduleSave(); } return;
   }
 
   const kids=childrenOf(map.rootId);
@@ -1125,8 +1125,35 @@ function autoLayout(){
   let lTop=-(leftSet.reduce((s,k,i)=>s+heightOf(k)+(i?VGAP:0),0))/2 + rootMid;
   leftSet.forEach(k=>{ const h=heightOf(k); const w=map.nodes[k].w||120; place(k, root.x-w-HGAP, lTop, -1); lTop+=h+VGAP; });
 
-  render(); scheduleSave();
+  if(!noRender){ render(); scheduleSave(); }
   } finally { _ci=_prevCI; }
+}
+
+// --- Live re-layout while editing -------------------------------------------
+// Move EXISTING node elements to freshly-computed positions and redraw the
+// connectors WITHOUT rebuilding the DOM, so the node being edited keeps its
+// caret/selection intact.
+function paintPositions(hidden){
+  hidden = hidden || hiddenSet();
+  document.querySelectorAll('.node').forEach(el=>{
+    const n=map.nodes[el.dataset.id];
+    if(n){ el.style.left=n.x+'px'; el.style.top=n.y+'px'; }
+  });
+  drawEdges(hidden);
+  positionNodeBar();
+}
+// Re-measure the node being edited, recompute the tidy layout, and paint it.
+// Keeps the map neat as the node grows while typing (the way GitMind reflows).
+function relayoutDuringEdit(id){
+  if(!map) return;
+  const el=document.querySelector(`.node[data-id="${id}"]`);
+  if(!el) return;
+  const n=map.nodes[id]; if(!n) return;
+  const sz=view.k*_uiZ();
+  const r=el.getBoundingClientRect();
+  n.w=r.width/sz; n.h=r.height/sz;
+  autoLayout(true);   // positions only — no DOM rebuild
+  paintPositions();   // shift existing elements + redraw edges
 }
 
 /* ============================================================
@@ -1754,6 +1781,7 @@ function startEdit(id){
   // select all text so typing replaces it
   const range=document.createRange(); range.selectNodeContents(textEl);
   const s=getSelection(); s.removeAllRanges(); s.addRange(range);
+  let _editRAF=0;
   const finish=(commit)=>{
     textEl.contentEditable='false'; el.classList.remove('editing');
     textEl.removeEventListener('blur',onBlur); textEl.removeEventListener('keydown',onKey);
@@ -1776,13 +1804,20 @@ function startEdit(id){
       }
       pushHistory();
     }
-    // Re-render to reflect the edit, but do NOT autoLayout — that would reset
-    // every node's position and reorder branches. Editing text leaves the rest
-    // of the map exactly where the user put it.
-    render();
+    // Tidy the branch so the (grown/shrunk) node and its siblings stay neatly
+    // laid out after editing — mirrors GitMind, which keeps the map tidy both
+    // during and after typing. autoLayout() re-renders internally.
+    if(_editRAF){ cancelAnimationFrame(_editRAF); _editRAF=0; }
+    autoLayout();
   };
   const onBlur=()=>finish(true);
-  const onInput=()=>{ tryMarkdownShortcut(); };
+  const onInput=()=>{
+    tryMarkdownShortcut();
+    // Keep the map tidy as the node grows (GitMind-style live reflow), throttled
+    // to one re-layout per animation frame so typing stays smooth.
+    if(_editRAF) cancelAnimationFrame(_editRAF);
+    _editRAF=requestAnimationFrame(()=>{ _editRAF=0; relayoutDuringEdit(id); });
+  };
   const onKey=e=>{
     e.stopPropagation();
     // Standard contentEditable shortcuts: Ctrl/Cmd+B / I / U toggle inline
