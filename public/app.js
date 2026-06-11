@@ -2685,6 +2685,12 @@ window.addEventListener('keydown',e=>{
   }
 });
 stage.addEventListener('dblclick',e=>{const n=e.target.closest('.node');if(n)startEdit(n.dataset.id);});
+// The stage clips overflow, but the browser can still programmatically scroll it
+// to bring a focused/oversized node's caret into view (e.g. after pasting a large
+// block while editing). Panning is done entirely via the #viewport transform, so
+// the stage must never scroll — any scroll would drag the absolutely-positioned
+// topbar and hint out of place (the fixed zoombar is unaffected). Lock it.
+stage.addEventListener('scroll',()=>{ if(stage.scrollLeft||stage.scrollTop){ stage.scrollLeft=0; stage.scrollTop=0; } },{passive:true});
 
 /* ============================================================
    SEARCH
