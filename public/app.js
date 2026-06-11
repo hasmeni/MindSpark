@@ -6205,19 +6205,78 @@ function showUserPill(){
   };
 }
 
+// ============================================================
+// OPTIONAL GitHub OAuth ("Sign in with GitHub") — second cloud login option.
+// Leave these blank to keep the app fully static/no-backend: only the personal
+// access token (PAT) flow shows. Set both to enable the OAuth button as well:
+//   clientId  : your GitHub OAuth App client_id (public)
+//   workerUrl : the deployed Cloudflare Worker base URL (holds the client_secret
+//               and does the code->token exchange). See /worker.
+// ============================================================
+const GH_OAUTH = { clientId: 'Ov23liCukvrI3Zs9p3Px', workerUrl: 'https://mindspark-oauth.githubpage.workers.dev/' };
+function oauthConfigured(){ return !!(GH_OAUTH.clientId && GH_OAUTH.workerUrl); }
+
+// Shared success path for BOTH login methods (PAT and OAuth).
+async function completeCloudLogin(token){
+  await CloudStore.login(token);
+  const ov=$('#loginOverlay'); if(ov) ov.style.display='none';
+  showUserPill();
+  await proceedBoot();
+}
+
+// Open GitHub's authorize page in a popup. The Worker callback posts the token
+// back to this window (see the message listener below).
+function startGithubLogin(){
+  if(!oauthConfigured()) return;
+  const rnd = (window.crypto && crypto.getRandomValues)
+    ? Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('')
+    : (Date.now().toString(36)+Math.random().toString(36).slice(2));
+  localStorage.setItem('mindspark:oauth:state', rnd);
+  const redirect = GH_OAUTH.workerUrl.replace(/\/+$/,'') + '/callback';
+  const url = 'https://github.com/login/oauth/authorize'
+    + '?client_id='   + encodeURIComponent(GH_OAUTH.clientId)
+    + '&redirect_uri=' + encodeURIComponent(redirect)
+    + '&scope=repo'
+    + '&state='        + encodeURIComponent(rnd);
+  const w=620,h=720, left=Math.max(0,(screen.width-w)/2), top=Math.max(0,(screen.height-h)/2);
+  const pop = window.open(url, 'mindspark_github_oauth', `width=${w},height=${h},left=${left},top=${top}`);
+  const err=$('#ghError');
+  if(!pop && err) err.textContent = 'Popup blocked — allow popups for this site, or use a token below.';
+}
+
+// Receive the token from the Worker popup. Validated by (a) message origin ===
+// the configured Worker origin and (b) a matching one-time state nonce.
+window.addEventListener('message', async (ev)=>{
+  if(!oauthConfigured()) return;
+  let workerOrigin; try{ workerOrigin = new URL(GH_OAUTH.workerUrl).origin; }catch(e){ return; }
+  if(ev.origin !== workerOrigin) return;
+  const d = ev.data;
+  if(!d || d.type !== 'mindspark-oauth') return;
+  const expected = localStorage.getItem('mindspark:oauth:state');
+  localStorage.removeItem('mindspark:oauth:state');
+  const err=$('#ghError');
+  if(d.error || !d.token){ if(err) err.textContent='GitHub sign-in failed'+(d.error?(': '+d.error):'')+'.'; return; }
+  if(!expected || d.state !== expected){ if(err) err.textContent='Sign-in could not be verified — please try again.'; return; }
+  try{ await completeCloudLogin(d.token); }
+  catch(e){ if(err) err.textContent = e.message || String(e); }
+});
+
 function showLoginOverlay(){
   const ov=$('#loginOverlay'); if(!ov) return;
   ov.style.display='flex';
   const sign=$('#ghSignIn'), pat=$('#ghPat'), err=$('#ghError');
+  // OAuth button: only shown when an OAuth App + Worker are configured.
+  const oauthBox=$('#loginOauth'), oauthBtn=$('#ghOauthBtn');
+  if(oauthBox){
+    if(oauthConfigured()){ oauthBox.style.display='block'; if(oauthBtn) oauthBtn.onclick=startGithubLogin; }
+    else { oauthBox.style.display='none'; }
+  }
   const doLogin=async()=>{
     const tok=(pat.value||'').trim();
     if(!tok){ err.textContent='Paste your token first.'; return; }
     err.textContent=''; sign.disabled=true; sign.textContent='Signing in…';
     try{
-      await CloudStore.login(tok);
-      ov.style.display='none';
-      showUserPill();
-      await proceedBoot();
+      await completeCloudLogin(tok);
     }catch(e){
       err.textContent = e.message || String(e);
       sign.disabled=false; sign.textContent='Sign in';

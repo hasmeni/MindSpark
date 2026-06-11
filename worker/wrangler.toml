@@ -1,0 +1,7 @@
+name = "mindspark-oauth"
+main = "oauth-worker.js"
+compatibility_date = "2024-09-01"
+
+# Secrets are NOT stored here. Set them once with:
+#   wrangler secret put GITHUB_CLIENT_ID
+#   wrangler secret put GITHUB_CLIENT_SECRET

@@ -1285,3 +1285,13 @@
   .diff-row .d-arrow{ margin:0 6px; color:var(--ink-soft); }
   .diff-empty{ padding:16px 14px; color:var(--ink-soft); }
 
+  /* OAuth ("Sign in with GitHub") button on the login overlay */
+  .login-oauth{ margin:2px 0 4px; }
+  .oauth-btn{ display:flex; align-items:center; justify-content:center; gap:9px; width:100%; padding:11px 14px;
+    border-radius:11px; border:1px solid var(--chrome-edge); background:var(--ink); color:var(--paper);
+    font-size:14px; font-weight:600; cursor:pointer; transition:opacity .15s; }
+  .oauth-btn:hover{ opacity:.9; }
+  .oauth-btn svg{ width:18px; height:18px; fill:currentColor; }
+  .oauth-or{ display:flex; align-items:center; gap:10px; margin:15px 2px 2px; color:var(--ink-soft); font-size:12px; }
+  .oauth-or::before, .oauth-or::after{ content:''; flex:1; height:1px; background:var(--line); }
+
