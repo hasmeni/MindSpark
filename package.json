@@ -6,9 +6,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server.js"
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "wrangler": "^4.100.0"
   }
 }
