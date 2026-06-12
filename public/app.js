@@ -25,6 +25,7 @@ const ServerStore = {
 const CloudStore = {
   token:null, user:null, repo:'mindspark-maps',
   shas:{}, indexSha:null, index:[],
+  deleted:[], deletedSha:null,
 
   _headers(t=this.token){ return {Authorization:`token ${t}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}; },
   // Base64 helpers safe for UTF-8 (atob/btoa are Latin-1 only)
@@ -44,6 +45,7 @@ const CloudStore = {
       this.token=t;
       await this._ensureRepo();
       await this._loadIndex();
+      await this._loadDeleted();
       return true;
     }catch(e){
       console.warn('Stored GitHub token rejected:', e.message);
@@ -57,11 +59,13 @@ const CloudStore = {
     localStorage.setItem('mindspark:gh:token', token);
     await this._ensureRepo();
     await this._loadIndex();
+    await this._loadDeleted();
     return this.user;
   },
   logout(){
     this.token=null; this.user=null;
     this.shas={}; this.indexSha=null; this.index=[];
+    this.deleted=[]; this.deletedSha=null;
     localStorage.removeItem('mindspark:gh:token');
   },
   async _ensureRepo(){
@@ -78,13 +82,66 @@ const CloudStore = {
       throw new Error('Could not access repo (HTTP '+r.status+')');
     }
   },
-  async _loadIndex(){
+  // Raw read of _index.json (updates indexSha). Returns [] on 404 or parse error.
+  async _fetchIndexRaw(){
     const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/_index.json`,{headers:this._headers()});
-    if(r.status===404){ this.index=[]; this.indexSha=null; return; }
+    if(r.status===404){ this.indexSha=null; return []; }
     if(!r.ok) throw new Error('Could not load index (HTTP '+r.status+')');
-    const data=await r.json();
-    this.indexSha=data.sha;
-    try{ this.index=JSON.parse(this._decode(data.content)); }catch(e){ this.index=[]; }
+    const data=await r.json(); this.indexSha=data.sha;
+    try{ const a=JSON.parse(this._decode(data.content)); return Array.isArray(a)?a:[]; }catch(e){ return []; }
+  },
+  async _loadIndex(){ this.index=await this._fetchIndexRaw(); },
+  // Tombstones: ids of maps the user explicitly deleted. Persisted so a lingering
+  // map file (e.g. a delete whose file-removal failed) is never resurrected.
+  async _loadDeleted(){
+    try{
+      const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/_deleted.json`,{headers:this._headers()});
+      if(!r.ok){ this.deleted=[]; this.deletedSha=null; return; }
+      const data=await r.json(); this.deletedSha=data.sha;
+      const a=JSON.parse(this._decode(data.content)); this.deleted=Array.isArray(a)?a:[];
+    }catch(e){ this.deleted=[]; this.deletedSha=null; }
+  },
+  async _saveDeleted(){
+    this.deletedSha=await this._writeFile('_deleted.json', JSON.stringify(this.deleted), this.deletedSha);
+  },
+  // List map ids present in the maps/ folder.
+  async _listMapFiles(){
+    const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/maps`,{headers:this._headers()});
+    if(r.status===404) return [];
+    if(!r.ok) throw new Error('Could not list maps (HTTP '+r.status+')');
+    const arr=await r.json();
+    return arr.filter(f=>f.type==='file'&&/\.json$/.test(f.name)).map(f=>f.name.replace(/\.json$/,''));
+  },
+  // Map files that exist but are absent from the index AND not tombstoned — i.e.
+  // maps lost to a damaged/clobbered index. Returns ready-to-restore entries.
+  async orphanMaps(){
+    let fileIds; try{ fileIds=await this._listMapFiles(); }catch(e){ return []; }
+    const inIndex=new Set(this.index.map(m=>m.id));
+    const tomb=new Set(this.deleted);
+    const ids=fileIds.filter(id=>!inIndex.has(id)&&!tomb.has(id));
+    const out=[];
+    for(const id of ids){
+      try{
+        const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/maps/${id}.json`,{headers:this._headers()});
+        if(!r.ok) continue;
+        const data=await r.json(); this.shas[id]=data.sha;
+        const m=JSON.parse(this._decode(data.content));
+        out.push({id:m.id||id, title:m.title||'(untitled)', color:m.color, updated:m.updated||0});
+      }catch(e){}
+    }
+    return out;
+  },
+  // Add recovered orphan entries back into the index (never a tombstoned id).
+  async restoreOrphans(entries){
+    if(!entries||!entries.length) return 0;
+    let n=0;
+    for(const e of entries){
+      if(this.deleted.includes(e.id)) continue;
+      if(!this.index.some(m=>m.id===e.id)){ this.index.unshift(e); n++; }
+    }
+    this.index.sort((a,b)=>(b.updated||0)-(a.updated||0));
+    if(n) await this._saveIndex();
+    return n;
   },
   async _writeFile(path, content, sha){
     const body={message:`MindSpark: update ${path}`, content:this._encode(content)};
@@ -114,13 +171,29 @@ const CloudStore = {
     return data.content.sha;
   },
   async _deleteFile(path, sha){
-    const r=await fetch(`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/${path}`,{
-      method:'DELETE', headers:{...this._headers(),'Content-Type':'application/json'},
-      body:JSON.stringify({message:`MindSpark: delete ${path}`, sha})
-    });
-    if(!r.ok) throw new Error('Delete '+path+' failed (HTTP '+r.status+')');
+    const url=`https://api.github.com/repos/${this.user.login}/${this.repo}/contents/${path}`;
+    const del=(s)=>fetch(url,{method:'DELETE', headers:{...this._headers(),'Content-Type':'application/json'},
+      body:JSON.stringify({message:`MindSpark: delete ${path}`, sha:s})});
+    let r=await del(sha);
+    if(r.ok || r.status===404) return;            // deleted, or already gone
+    if(r.status===409 || r.status===422){          // missing/stale sha → refresh and retry
+      const gh=await fetch(url,{headers:this._headers()});
+      if(gh.status===404) return;
+      if(gh.ok){ const d=await gh.json(); const r2=await del(d.sha); if(r2.ok||r2.status===404) return; r=r2; }
+    }
+    throw new Error('Delete '+path+' failed (HTTP '+r.status+')');
   },
   async _saveIndex(){
+    // Merge-on-write: re-read the server index and overlay our in-memory entries,
+    // then drop tombstoned ids. A save can therefore never clobber entries that
+    // still exist on the server — only an explicit delete (via the tombstone
+    // list) removes one. This neutralises the empty/failed-read clobber bug.
+    let server=[];
+    try{ server=await this._fetchIndexRaw(); }catch(e){ server=this.index.slice(); }
+    const byId=new Map(server.map(m=>[m.id,m]));
+    for(const m of this.index) byId.set(m.id,m);
+    for(const id of this.deleted) byId.delete(id);
+    this.index=[...byId.values()].sort((a,b)=>(b.updated||0)-(a.updated||0));
     this.indexSha=await this._writeFile('_index.json', JSON.stringify(this.index), this.indexSha);
   },
   // public API matching ServerStore
@@ -183,10 +256,14 @@ const CloudStore = {
     await this._saveIndex();
   },
   async remove(id){
-    const sha=this.shas[id];
-    if(sha){ try{ await this._deleteFile(`maps/${id}.json`, sha); }catch(e){ console.warn(e); } }
+    // Delete the file (refreshing the sha if we don't have it cached — so deleting
+    // a never-opened map still removes its file, not just the index entry).
+    try{ await this._deleteFile(`maps/${id}.json`, this.shas[id]); }
+    catch(e){ console.warn('map file delete:', e.message); }
     delete this.shas[id];
     this.index=this.index.filter(m=>m.id!==id);
+    if(!this.deleted.includes(id)) this.deleted.push(id);   // tombstone: never resurrect
+    try{ await this._saveDeleted(); }catch(e){ console.warn('tombstone save:', e.message); }
     await this._saveIndex();
   },
   // Version history = the GitHub commit history of the map's JSON file.
@@ -6188,6 +6265,19 @@ async function proceedBoot(){
     const ok=await loadMap(idx[0].id);
     if(!ok) createMap();
   } else {
+    // Empty list. Before seeding a blank map, check for orphan map files that
+    // exist in the repo but aren't in the index and weren't deleted — the
+    // signature of a damaged/clobbered index. Restore those instead of losing them.
+    let orphans=[];
+    if(typeof Store.orphanMaps==='function'){ try{ orphans=await Store.orphanMaps(); }catch(e){} }
+    if(orphans && orphans.length){
+      try{
+        const n=await Store.restoreOrphans(orphans);
+        if(n) toast(n+' recovered map'+(n>1?'s':'')+' restored to your list');
+      }catch(e){}
+      let idx2=[]; try{ idx2=await Store.list(); }catch(e){}
+      if(idx2.length && await loadMap(idx2[0].id)) return;
+    }
     createMap();
   }
 }
