@@ -22,12 +22,21 @@ PAT login shows — nothing else changes.
    wrangler secret put GITHUB_CLIENT_SECRET
    ```
 
-3. **Deploy:**
+3. **Restrict token delivery (strongly recommended)** — in `wrangler.toml` add:
+   ```toml
+   [vars]
+   ALLOWED_ORIGIN = "https://your-mindspark-app.example.com"
+   ```
+   With this set, the Worker will hand the token only to your app's origin.
+   Without it, the token is posted with `'*'`, which a malicious page that
+   opens the OAuth flow itself could intercept.
+
+4. **Deploy:**
    ```sh
    wrangler deploy
    ```
 
-4. **Point the app at it** — in `public/app.js`:
+5. **Point the app at it** — in `public/app.js`:
    ```js
    const GH_OAUTH = {
      clientId:  '<your client id>',

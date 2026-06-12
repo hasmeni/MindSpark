@@ -33,8 +33,13 @@ export default {
     if (url.pathname === '/callback') {
       const code = url.searchParams.get('code');
       const state = (url.searchParams.get('state') || '').replace(/[^A-Za-z0-9_-]/g, '');
-      if (!code) return html(resultPage('', state, 'missing_code'));
+      if (!code) return html(resultPage('', state, 'missing_code', (env.ALLOWED_ORIGIN || '').replace(/\/+$/, '')));
 
+      // Where the token may be delivered. If ALLOWED_ORIGIN is set (recommended),
+      // the token is postMessage'd ONLY to that origin — otherwise a malicious
+      // site that opens the authorize URL itself could receive a previously-
+      // authorized user's token via its own opener window.
+      const allowed = (env.ALLOWED_ORIGIN || '').replace(/\/+$/, '');
       let token = '', error = '';
       try {
         const resp = await fetch('https://github.com/login/oauth/access_token', {
@@ -52,7 +57,7 @@ export default {
       } catch (e) {
         error = 'exchange_failed';
       }
-      return html(resultPage(token, state, error));
+      return html(resultPage(token, state, error, allowed));
     }
 
     if (url.pathname === '/' || url.pathname === '') {
@@ -65,11 +70,14 @@ export default {
 };
 
 // HTML page returned to the popup: posts the result to the opener, then closes.
-function resultPage(token, state, error) {
+function resultPage(token, state, error, allowedOrigin) {
   // JSON.stringify makes each value a safe JS literal; escape "<" defensively so
   // no field can ever break out of the <script> block.
   const payload = JSON.stringify({ type: 'mindspark-oauth', token, state, error })
     .replace(/</g, '\\u003c');
+  // Restrict delivery to the configured app origin when provided ('*' otherwise,
+  // for backwards compatibility — set ALLOWED_ORIGIN, see README).
+  const target = JSON.stringify(allowedOrigin || '*');
   const msg = error ? 'Sign-in failed. You can close this window.'
                     : 'Signed in. You can close this window.';
   return `<!doctype html><html><head><meta charset="utf-8"><title>MindSpark — GitHub</title>
@@ -77,7 +85,7 @@ function resultPage(token, state, error) {
 </head><body><p>${msg}</p>
 <script>
 (function(){
-  try { if (window.opener) window.opener.postMessage(${payload}, '*'); } catch (e) {}
+  try { if (window.opener) window.opener.postMessage(${payload}, ${target}); } catch (e) {}
   setTimeout(function(){ try { window.close(); } catch (e) {} }, 400);
 })();
 </script>

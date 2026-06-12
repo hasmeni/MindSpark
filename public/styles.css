@@ -423,6 +423,9 @@
   .node-text .node-link{color:var(--link,var(--accent));text-decoration:underline;text-underline-offset:2px;cursor:pointer;word-break:break-all}
   .node-text .node-link:hover{color:var(--accent-deep)}
   .node.editing .node-text .node-link{cursor:text;color:inherit;text-decoration:underline}
+  .node-text .node-link-fav{width:14px;height:14px;border-radius:3px;object-fit:cover;vertical-align:-2px;margin-right:5px;display:inline-block;background:var(--line-2,#e2e8f0)}
+  .node-text .node-link-label{word-break:break-all}
+  .node.editing .node-text .node-link-fav{display:none}
   .swatches{display:flex;gap:3px;align-items:center;padding:0 2px}
   .sw{width:18px;height:18px;border-radius:50%;border:2px solid transparent;cursor:pointer}
   .sw:hover{transform:scale(1.18)}

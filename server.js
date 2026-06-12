@@ -102,7 +102,7 @@ const server = http.createServer(async (req, res) => {
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://icons.duckduckgo.com",
     "connect-src 'self' https://api.github.com https://api.crossref.org https://api.anthropic.com https://api.openai.com",
     "object-src 'none'",
     "base-uri 'self'",
@@ -149,7 +149,9 @@ const server = http.createServer(async (req, res) => {
     // ----- static files -----
     let file = p === '/' ? '/index.html' : p;
     const full = path.join(PUBLIC, path.normalize(file).replace(/^(\.\.[/\\])+/, ''));
-    if (full.startsWith(PUBLIC) && fs.existsSync(full) && fs.statSync(full).isFile()) {
+    // Prefix check with a trailing separator so a sibling directory like
+    // "<PUBLIC>-evil" can never satisfy the check (defense in depth).
+    if ((full === PUBLIC || full.startsWith(PUBLIC + path.sep)) && fs.existsSync(full) && fs.statSync(full).isFile()) {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       return send(res, 200, fs.readFileSync(full), MIME[path.extname(full)] || 'application/octet-stream');
     }

@@ -351,7 +351,10 @@ function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ
 // Per-map camera (zoom + pan), saved in localStorage so each map reopens exactly
 // where the user left it. Kept out of the map object so it never bumps the map's
 // "updated" time or reshuffles the sidebar.
-function saveMapView(){
+let _svTimer=null;
+function saveMapView(){ clearTimeout(_svTimer); _svTimer=setTimeout(_saveMapViewNow, 150); }
+window.addEventListener('pagehide', ()=>{ clearTimeout(_svTimer); try{ _saveMapViewNow(); }catch(e){} });
+function _saveMapViewNow(){
   if(!map || !map.id || READONLY) return;
   // Store the map-space point at the viewport CENTRE (plus zoom), not the raw pan
   // offset, so the same framing reproduces on any screen size — a map reopened on
@@ -373,6 +376,18 @@ function _markStage(){ const z=_stageSize(); if(z.w>1&&z.h>1) _prevStage=z; }
 // Apply a saved camera viewport-INDEPENDENTLY: recompute the pan from the CURRENT
 // stage size so the stored centre point + zoom reproduce at any viewsize. Legacy
 // {x,y} entries are honoured once, then migrated to {cx,cy} on the next save.
+// While the stage width animates (sidebar collapse/expand), keep the given
+// map-space point centred each frame so the map holds its position on screen.
+function _reframeDuring(ms, cx, cy){
+  const now=()=> (window.performance&&performance.now)?performance.now():Date.now();
+  const t0=now();
+  (function step(){
+    const {w:SW,h:SH}=_stageSize();
+    if(SW>1&&SH>1){ view.x=SW/2-cx*view.k; view.y=SH/2-cy*view.k; applyView(); }
+    if(now()-t0<ms) requestAnimationFrame(step);
+    else { _markStage(); saveMapView(); updateMinimap(); }
+  })();
+}
 function applyMapView(saved){
   view.k = isFinite(saved.k) ? saved.k : 1;
   if(isFinite(saved.cx) && isFinite(saved.cy)){
@@ -618,6 +633,17 @@ function updateTokenTotal(){
 
 // Render text inside a node, turning http(s)://… URLs into clickable links.
 const URL_RE = /(https?:\/\/[^\s<>"'`)]+)/g;
+// A short, readable label for a URL (host + trimmed path) used as the link text.
+function prettyUrl(u){
+  try{
+    const x=new URL(u);
+    let label=x.hostname.replace(/^www\./,'');
+    let path=(x.pathname && x.pathname!=='/') ? x.pathname.replace(/\/$/,'') : '';
+    label+=path;
+    if(label.length>44) label=label.slice(0,42)+'\u2026';
+    return label;
+  }catch(_){ return u; }
+}
 function appendTextWithLinks(container, text){
   let last=0, m;
   URL_RE.lastIndex=0;
@@ -625,7 +651,20 @@ function appendTextWithLinks(container, text){
     if(m.index>last) container.appendChild(document.createTextNode(text.slice(last,m.index)));
     const a=document.createElement('a');
     a.href=m[0]; a.target='_blank'; a.rel='noopener noreferrer';
-    a.textContent=m[0]; a.className='node-link';
+    a.className='node-link';
+    // Favicon (best-effort; removed if it fails to load — e.g. offline).
+    let _host=''; try{ _host=new URL(m[0]).hostname.replace(/^www\./,''); }catch(_){}
+    if(_host){
+      const fav=document.createElement('img');
+      fav.className='node-link-fav'; fav.alt=''; fav.loading='lazy'; fav.decoding='async';
+      fav.src='https://icons.duckduckgo.com/ip3/'+_host+'.ico';
+      fav.addEventListener('error',()=>{ try{ fav.remove(); }catch(_){} });
+      a.appendChild(fav);
+    }
+    // Readable label instead of the raw (often long) URL. Display-only: editing
+    // starts from the stored raw text, so this never changes what gets saved.
+    const _lab=document.createElement('span'); _lab.className='node-link-label';
+    _lab.textContent=prettyUrl(m[0]); a.appendChild(_lab);
     a.addEventListener('mousedown',e=>e.stopPropagation());
     a.addEventListener('click',e=>{
       e.stopPropagation();
@@ -752,7 +791,7 @@ function sanitizeInlineHTML(html, extraTags){
               .join('; ');
             if(safe) child.setAttribute('style', safe); else child.removeAttribute('style');
           }
-          else if(!['href','target','rel','class','color','face','size'].includes(n)) child.removeAttribute(attr.name);
+          else if(!['href','target','rel','color','face','size'].includes(n)) child.removeAttribute(attr.name);   // note: class removed — pasted HTML must not claim app CSS classes
         });
         if(tag==='a'){ child.setAttribute('target','_blank'); child.setAttribute('rel','noopener noreferrer'); }
         walk(child);
@@ -2098,6 +2137,8 @@ function showPicker(anchor, kind, current, onPick){
     activePicker.remove(); activePicker=null; return;
   }
   if(activePicker){ activePicker.remove(); activePicker=null; }
+  document.querySelectorAll('.tpl-pop, .export-pop').forEach(p=>{ try{p.remove();}catch(_){} });
+  try{ if(typeof closeThemePanel==='function') closeThemePanel(); }catch(_){}
   const p=document.createElement('div');
   p.className='picker '+kind; p._anchor=anchor;
   if(kind==='size'){
@@ -3125,6 +3166,83 @@ function showNotesEditor(nodeId){
    ids when seeding.
    ============================================================ */
 const TEMPLATES = {
+  /* ===== AI & agents (flagship) ===== */
+  agent_architecture: {
+    name:'AI Agent Architecture', desc:'The anatomy of a single agent: model, memory, planning, tools, loop & guardrails', color:'#8c5da7', group:'ai', icon:'\U0001F9E0',
+    nodes:[
+      { k:'root', text:'AI Agent Architecture', notes:'<p>The anatomy of a single AI agent \u2014 the model at its core, what it remembers, how it plans, the tools it can call, and the loop &amp; guardrails that keep it on track.</p>' },
+      { k:'model', parent:'root', text:'Model (LLM core)' },
+      { k:'m1', parent:'model', text:'Reasoning engine' },
+      { k:'m2', parent:'model', text:'Model choice (capability vs cost)' },
+      { k:'m3', parent:'model', text:'Context window' },
+      { k:'m4', parent:'model', text:'System prompt' },
+      { k:'memory', parent:'root', text:'Memory' },
+      { k:'mem1', parent:'memory', text:'Short-term (scratchpad)' },
+      { k:'mem2', parent:'memory', text:'Long-term (vector store)' },
+      { k:'mem3', parent:'memory', text:'Episodic' },
+      { k:'mem4', parent:'memory', text:'Working state' },
+      { k:'plan', parent:'root', text:'Planning' },
+      { k:'p1', parent:'plan', text:'Task decomposition' },
+      { k:'p2', parent:'plan', text:'ReAct (reason + act)' },
+      { k:'p3', parent:'plan', text:'Chain-of-thought' },
+      { k:'p4', parent:'plan', text:'Reflection / self-critique' },
+      { k:'p5', parent:'plan', text:'Re-planning' },
+      { k:'tools', parent:'root', text:'Tools / Actions' },
+      { k:'t1', parent:'tools', text:'Function calling' },
+      { k:'t2', parent:'tools', text:'APIs' },
+      { k:'t3', parent:'tools', text:'Code execution' },
+      { k:'t4', parent:'tools', text:'Web search / retrieval' },
+      { k:'t5', parent:'tools', text:'MCP servers' },
+      { k:'loop', parent:'root', text:'Control loop' },
+      { k:'l1', parent:'loop', text:'Observe \u2192 reason \u2192 act' },
+      { k:'l2', parent:'loop', text:'Stopping criteria' },
+      { k:'l3', parent:'loop', text:'Retries / error handling' },
+      { k:'guard', parent:'root', text:'Guardrails' },
+      { k:'g1', parent:'guard', text:'Input validation' },
+      { k:'g2', parent:'guard', text:'Output checks' },
+      { k:'g3', parent:'guard', text:'Human-in-the-loop' },
+      { k:'g4', parent:'guard', text:'Cost / rate limits' },
+      { k:'out', parent:'root', text:'Output' },
+      { k:'o1', parent:'out', text:'Final response' },
+      { k:'o2', parent:'out', text:'Structured output' },
+      { k:'o3', parent:'out', text:'Side effects (writes, calls)' }
+    ],
+    links:[ { from:'loop', to:'tools' }, { from:'loop', to:'memory' }, { from:'plan', to:'model' } ]
+  },
+  agentic_patterns: {
+    name:'Agentic Workflow Patterns', desc:'From an augmented LLM to autonomous agents \u2014 and how to choose between them', color:'#2f6f6a', group:'ai', icon:'\U0001F500',
+    nodes:[
+      { k:'root', text:'Agentic Workflow Patterns', notes:'<p>Common patterns for building agentic systems, from a single augmented LLM up to autonomous agents \u2014 and how to choose between them. Rule of thumb: prefer the <strong>simplest pattern that works</strong>.</p>' },
+      { k:'aug', parent:'root', text:'Augmented LLM (foundation)' },
+      { k:'au1', parent:'aug', text:'Retrieval' },
+      { k:'au2', parent:'aug', text:'Tools' },
+      { k:'au3', parent:'aug', text:'Memory' },
+      { k:'chain', parent:'root', text:'Prompt chaining' },
+      { k:'c1', parent:'chain', text:'Sequential steps' },
+      { k:'c2', parent:'chain', text:'Gate checks between steps' },
+      { k:'route', parent:'root', text:'Routing' },
+      { k:'r1', parent:'route', text:'Classify the input' },
+      { k:'r2', parent:'route', text:'Send to a specialized path' },
+      { k:'par', parent:'root', text:'Parallelization' },
+      { k:'pa1', parent:'par', text:'Sectioning (split the work)' },
+      { k:'pa2', parent:'par', text:'Voting (run N, aggregate)' },
+      { k:'orch', parent:'root', text:'Orchestrator\u2013workers' },
+      { k:'or1', parent:'orch', text:'Dynamic subtasks' },
+      { k:'or2', parent:'orch', text:'Synthesize results' },
+      { k:'evo', parent:'root', text:'Evaluator\u2013optimizer' },
+      { k:'e1', parent:'evo', text:'Generate' },
+      { k:'e2', parent:'evo', text:'Critique' },
+      { k:'e3', parent:'evo', text:'Refine (loop)' },
+      { k:'auto', parent:'root', text:'Autonomous agent' },
+      { k:'at1', parent:'auto', text:'Open-ended loop' },
+      { k:'at2', parent:'auto', text:'Tool use' },
+      { k:'at3', parent:'auto', text:'Human checkpoints' },
+      { k:'choose', parent:'root', text:'Choosing a pattern' },
+      { k:'ch1', parent:'choose', text:'Complexity vs cost vs latency' },
+      { k:'ch2', parent:'choose', text:'Prefer the simplest that works' }
+    ],
+    links:[ { from:'auto', to:'aug' } ]
+  },
   rtcce: {
     name: 'Role / Task / Context / Constraints / Examples',
     desc: 'Classic structured prompt — the bread-and-butter shape',
@@ -3964,6 +4082,7 @@ const TEMPLATES = {
 // Template categories (ordered) for the drill-down menu.
 const TEMPLATE_CATEGORIES = [
   { id:'prompt',   label:'Prompt engineering',  icon:'✦', color:'#5b8db2' },
+  { id:'ai',       label:'AI & agents',          icon:'🤖', color:'#8c5da7' },
   { id:'research', label:'Research & writing',   icon:'🔬', color:'#3a6ea5' },
   { id:'study',    label:'Students & educators', icon:'🎓', color:'#6a8c3f' },
   { id:'software', label:'Software & technical', icon:'💻', color:'#8c5da7' },
@@ -4081,8 +4200,14 @@ function loadUserTemplates(){
     if(idx>=0) TEMPLATE_CATEGORIES.splice(idx,1);
   }
 }
+// Close every top-level menu/popover so only one is ever open at once.
+function closeAllMenus(){
+  document.querySelectorAll('.tpl-pop, .export-pop').forEach(p=>{ try{p.remove();}catch(_){} });
+  try{ if(typeof closeThemePanel==='function') closeThemePanel(); }catch(_){}
+  if(typeof activePicker!=='undefined' && activePicker){ try{activePicker.remove();}catch(_){} activePicker=null; }
+}
 function showTemplatesMenu(){
-  document.querySelectorAll('.tpl-pop').forEach(p => p.remove());
+  closeAllMenus();
   const pop = document.createElement('div');
   pop.className = 'tpl-pop';
   document.body.appendChild(pop);
@@ -4264,8 +4389,7 @@ function scheduleSave(){
    EXPORT  (JSON + PNG via manual canvas render)
    ============================================================ */
 function exportMenu(){
-  // Close existing popover if open
-  document.querySelectorAll('.export-pop').forEach(p=>p.remove());
+  closeAllMenus();
   const pop=document.createElement('div');
   pop.className='export-pop';
   pop.innerHTML=`
@@ -5800,7 +5924,14 @@ $('#minimap')?.addEventListener('click', e=>e.stopPropagation());
   });
 })();
 $('#menuExport').onclick=exportMenu;
-$('#toggleSide').onclick=()=>$('#side').classList.toggle('collapsed');
+$('#toggleSide').onclick=()=>{
+  // Capture the map-point at the viewport centre BEFORE the width changes, then
+  // keep it centred while the sidebar animates — so the map doesn't drift.
+  let cx,cy,has=false;
+  if(map){ const {w:SW,h:SH}=_stageSize(); cx=(SW/2-view.x)/view.k; cy=(SH/2-view.y)/view.k; has=isFinite(cx)&&isFinite(cy); }
+  $('#side').classList.toggle('collapsed');
+  if(has) _reframeDuring(300, cx, cy);
+};
 // On phones, default the sidebar to collapsed (slid off-screen overlay).
 // And tapping the dimmed canvas while it's open should close it.
 if(window.matchMedia('(max-width: 720px)').matches){
@@ -5959,6 +6090,7 @@ $('#varsBtn')?.addEventListener('click', showMapVariables);
 $('#themeBtn').onclick=(e)=>{
   e.stopPropagation();
   if(themePanel){ closeThemePanel(); return; }
+  closeAllMenus();
   const curTheme  = document.documentElement.getAttribute('data-theme') || 'light';
   const curStyle  = (map && map.style)  || 'modern';
   const curLayout = (map && map.layout) || 'balanced';
