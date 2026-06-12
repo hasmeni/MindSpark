@@ -353,12 +353,37 @@ function _stagePoint(cx,cy){ const r=stage.getBoundingClientRect(); const z=_uiZ
 // "updated" time or reshuffles the sidebar.
 function saveMapView(){
   if(!map || !map.id || READONLY) return;
-  try{ localStorage.setItem('mindspark:view:'+map.id, JSON.stringify({k:view.k, x:view.x, y:view.y})); }catch(e){}
+  // Store the map-space point at the viewport CENTRE (plus zoom), not the raw pan
+  // offset, so the same framing reproduces on any screen size — a map reopened on
+  // a different browser/device/window lands consistently instead of shifted.
+  const {w:SW,h:SH}=_stageSize();
+  const cx=(SW/2 - view.x)/view.k, cy=(SH/2 - view.y)/view.k;
+  if(!isFinite(cx)||!isFinite(cy)) return;
+  try{ localStorage.setItem('mindspark:view:'+map.id, JSON.stringify({k:view.k, cx, cy})); }catch(e){}
 }
 function loadMapView(id){
   try{ const v=JSON.parse(localStorage.getItem('mindspark:view:'+id)||'null');
-    if(v && isFinite(v.k) && isFinite(v.x) && isFinite(v.y)) return v; }catch(e){}
+    if(v && isFinite(v.k) && ((isFinite(v.cx)&&isFinite(v.cy)) || (isFinite(v.x)&&isFinite(v.y)))) return v; }catch(e){}
   return null;
+}
+// Stage size when the camera was last framed — lets a live window resize keep the
+// same map-point centred instead of letting the map drift sideways.
+let _prevStage=null;
+function _markStage(){ const z=_stageSize(); if(z.w>1&&z.h>1) _prevStage=z; }
+// Apply a saved camera viewport-INDEPENDENTLY: recompute the pan from the CURRENT
+// stage size so the stored centre point + zoom reproduce at any viewsize. Legacy
+// {x,y} entries are honoured once, then migrated to {cx,cy} on the next save.
+function applyMapView(saved){
+  view.k = isFinite(saved.k) ? saved.k : 1;
+  if(isFinite(saved.cx) && isFinite(saved.cy)){
+    const {w:SW,h:SH}=_stageSize();
+    view.x = SW/2 - saved.cx*view.k;
+    view.y = SH/2 - saved.cy*view.k;
+  } else {
+    view.x = isFinite(saved.x) ? saved.x : 0;
+    view.y = isFinite(saved.y) ? saved.y : 0;
+  }
+  applyView(); _markStage();
 }
 let sel=null;                 // selected node id
 let history=[],hpos=-1;       // undo stack
@@ -2653,7 +2678,7 @@ function fit(){
   view.k=k;
   view.x=SW/2 - (minx+cw/2)*k;
   view.y=SH/2 - (miny+ch/2)*k;
-  applyView();
+  applyView(); _markStage();
 }
 // Centre the map's bounding box in the current stage viewport WITHOUT changing
 // zoom — used when the viewport size changes (e.g. entering/leaving focus mode)
@@ -2673,7 +2698,7 @@ function recenter(){
   const cx=(minx+maxx)/2, cy=(miny+maxy)/2;
   view.x = SW/2 - cx*view.k;
   view.y = SH/2 - cy*view.k;
-  applyView();
+  applyView(); _markStage();
 }
 
 /* ============================================================
@@ -2944,8 +2969,8 @@ function updateMinimapViewport(){
   const mm=$('#minimap'); if(!mm||!mm._t) return;
   const v=mm.querySelector('#mmView'); if(!v) return;
   const {minx,miny,scale,ox,oy}=mm._t;
-  const r=stage.getBoundingClientRect();
-  const wx=-view.x/view.k, wy=-view.y/view.k, ww=r.width/view.k, wh=r.height/view.k;
+  const {w:SW,h:SH}=_stageSize();   // logical size — consistent regardless of UI display zoom
+  const wx=-view.x/view.k, wy=-view.y/view.k, ww=SW/view.k, wh=SH/view.k;
   v.setAttribute('x',(ox+(wx-minx)*scale).toFixed(1));
   v.setAttribute('y',(oy+(wy-miny)*scale).toFixed(1));
   v.setAttribute('width', Math.max(4,ww*scale).toFixed(1));
@@ -4168,7 +4193,7 @@ function createMap(){
   const rn=map.nodes[rid];
   view.x = r.width/2 - (rn.x + (rn.w||120)/2);
   view.y = r.height/2 - (rn.y + (rn.h||50)/2);
-  applyView();
+  applyView(); _markStage();
   scheduleSave();          // persist to the database in the background
   refreshList();
   setTimeout(()=>startEdit(rid),120);
@@ -4194,7 +4219,7 @@ async function loadMap(id){
   // Restore this map's saved camera if it has one; otherwise preserve the
   // session zoom across switches; otherwise auto-fit a fresh map.
   const saved=loadMapView(map.id);
-  if(saved){ view.k=saved.k; view.x=saved.x; view.y=saved.y; applyView(); }
+  if(saved){ applyMapView(saved); }
   else if(userZoom!=null){ view.k=userZoom; recenter(); }
   else fit();
   refreshList();
@@ -5713,6 +5738,24 @@ $('#newMapMenu')?.addEventListener('click', e => { e.stopPropagation(); showTemp
 $('#emptyNew').onclick=createMap;
 $('#addChild').onclick=()=>{ if(!map)return; addNode(sel||map.rootId,false); };
 // Before printing, fit the whole map into view so nothing is clipped on paper.
+let _rzReframeT=null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(_rzReframeT);
+  _rzReframeT=setTimeout(()=>{
+    if(!map){ _markStage(); return; }
+    const {w:SW,h:SH}=_stageSize();
+    if(!(SW>1&&SH>1)) return;
+    // Keep whatever map-point was centred still centred at the new size.
+    if(_prevStage && _prevStage.w>1 && _prevStage.h>1){
+      const cx=(_prevStage.w/2 - view.x)/view.k, cy=(_prevStage.h/2 - view.y)/view.k;
+      view.x = SW/2 - cx*view.k;
+      view.y = SH/2 - cy*view.k;
+      applyView(); saveMapView();
+    }
+    _prevStage={w:SW,h:SH};
+    updateMinimap();
+  }, 160);
+});
 window.addEventListener('beforeprint', ()=>{ try{ fit(); }catch(e){} });
 
 $('#layout').onclick=autoLayout;            // re-tidies node positions (does NOT move the camera)
