@@ -3202,7 +3202,7 @@ function showNotesEditor(nodeId){
 const TEMPLATES = {
   /* ===== AI & agents (flagship) ===== */
   agent_architecture: {
-    name:'AI Agent Architecture', desc:'The anatomy of a single agent: model, memory, planning, tools, loop & guardrails', color:'#8c5da7', group:'ai', icon:'\U0001F9E0',
+    name:'AI Agent Architecture', desc:'The anatomy of a single agent: model, memory, planning, tools, loop & guardrails', color:'#8c5da7', group:'ai', icon:'🧠',
     nodes:[
       { k:'root', text:'AI Agent Architecture', notes:'<p>The anatomy of a single AI agent \u2014 the model at its core, what it remembers, how it plans, the tools it can call, and the loop &amp; guardrails that keep it on track.</p>' },
       { k:'model', parent:'root', text:'Model (LLM core)' },
@@ -3244,7 +3244,7 @@ const TEMPLATES = {
     links:[ { from:'loop', to:'tools' }, { from:'loop', to:'memory' }, { from:'plan', to:'model' } ]
   },
   agentic_patterns: {
-    name:'Agentic Workflow Patterns', desc:'From an augmented LLM to autonomous agents \u2014 and how to choose between them', color:'#2f6f6a', group:'ai', icon:'\U0001F500',
+    name:'Agentic Workflow Patterns', desc:'From an augmented LLM to autonomous agents \u2014 and how to choose between them', color:'#2f6f6a', group:'ai', icon:'🔀',
     nodes:[
       { k:'root', text:'Agentic Workflow Patterns', notes:'<p>Common patterns for building agentic systems, from a single augmented LLM up to autonomous agents \u2014 and how to choose between them. Rule of thumb: prefer the <strong>simplest pattern that works</strong>.</p>' },
       { k:'aug', parent:'root', text:'Augmented LLM (foundation)' },
