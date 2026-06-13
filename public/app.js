@@ -3052,6 +3052,46 @@ function updateBreadcrumb(){
 /* ============================================================
    MAPS — list / create / load / delete
    ============================================================ */
+// Per-map "⋮" menu (Duplicate / Delete) for the sidebar — one open at a time,
+// closes on outside click / scroll / blur. Frees row width for the map title.
+let _rowPop=null, _rowPopOut=null;
+function closeRowMenu(){
+  if(_rowPop){ try{ _rowPop.remove(); }catch(_){} _rowPop=null; }
+  if(_rowPopOut){
+    document.removeEventListener('mousedown', _rowPopOut, true);
+    window.removeEventListener('scroll', closeRowMenu, true);
+    window.removeEventListener('blur', closeRowMenu);
+    _rowPopOut=null;
+  }
+}
+function openRowMenu(btn, m){
+  if(_rowPop && _rowPop._for===m.id){ closeRowMenu(); return; }   // toggle off
+  if(typeof closeAllMenus==='function') closeAllMenus();
+  closeRowMenu();
+  const pop=document.createElement('div'); pop.className='row-pop'; pop._for=m.id;
+  pop.innerHTML='<button data-a="dup"><span class="rp-ic">\u2398</span>Duplicate</button>'+
+                '<button data-a="del" class="danger"><span class="rp-ic">\uD83D\uDDD1</span>Delete</button>';
+  document.body.appendChild(pop);
+  const r=btn.getBoundingClientRect();
+  pop.style.position='fixed';
+  pop.style.right=(window.innerWidth - r.right)+'px';
+  if(r.bottom+5+pop.offsetHeight > window.innerHeight-6){ pop.style.bottom=(window.innerHeight - r.top + 5)+'px'; }
+  else { pop.style.top=(r.bottom+5)+'px'; }
+  pop.querySelector('[data-a="dup"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); duplicateMap(m.id); };
+  pop.querySelector('[data-a="del"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu();
+    if(!confirm('Delete "'+(m.title||'Untitled')+'"?')) return;
+    await Store.remove(m.id);
+    if(map && map.id===m.id){ map=null; render(); }
+    refreshList(); toast('Map deleted');
+  };
+  _rowPop=pop;
+  _rowPopOut=(e)=>{ if(_rowPop && (!e || e.type!=='mousedown' || !_rowPop.contains(e.target))) closeRowMenu(); };
+  setTimeout(()=>{
+    document.addEventListener('mousedown', _rowPopOut, true);
+    window.addEventListener('scroll', closeRowMenu, true);
+    window.addEventListener('blur', closeRowMenu);
+  },0);
+}
 async function refreshList(){
   let idx=[];
   try{ idx=await Store.list(); }catch(e){ idx=[]; }
@@ -3068,16 +3108,10 @@ async function refreshList(){
   (idx||[]).forEach(m=>{
     const el=document.createElement('div');
     el.className='map-item'+(map&&m.id===map.id?' active':'');
-    el.innerHTML=`<span class="dot" style="background:${m.color||'#e0613a'}"></span><span class="nm">${escapeHtml(m.title||'Untitled')}</span><button class="dup" title="Duplicate">⎘</button><button class="x" title="Delete">×</button>`;
+    el.innerHTML=`<span class="dot" style="background:${m.color||'#e0613a'}"></span><span class="nm">${escapeHtml(m.title||'Untitled')}</span><button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>`;
     el.style.cursor='pointer';
     el.onclick=()=>{ if(!map || map.id!==m.id) loadMap(m.id); };
-    el.querySelector('.dup').onclick=ev=>{ ev.stopPropagation(); duplicateMap(m.id); };
-    el.querySelector('.x').onclick=async ev=>{ev.stopPropagation();
-      if(!confirm('Delete "'+(m.title||'Untitled')+'"?'))return;
-      await Store.remove(m.id);
-      if(map&&map.id===m.id){map=null;render();}
-      refreshList(); toast('Map deleted');
-    };
+    el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openRowMenu(ev.currentTarget, m); };
     list.appendChild(el);
   });
 }
@@ -4126,6 +4160,7 @@ function loadUserTemplates(){
 // Close every top-level menu/popover so only one is ever open at once.
 function closeAllMenus(){
   document.querySelectorAll('.tpl-pop, .export-pop').forEach(p=>{ try{p.remove();}catch(_){} });
+  if(typeof closeRowMenu==='function') closeRowMenu();
   try{ if(typeof closeThemePanel==='function') closeThemePanel(); }catch(_){}
   if(typeof activePicker!=='undefined' && activePicker){ try{activePicker.remove();}catch(_){} activePicker=null; }
 }
