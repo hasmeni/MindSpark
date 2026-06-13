@@ -4001,83 +4001,6 @@ const TEMPLATES = {
 
   /* ===== Feature showcase — demonstrates colours, formatting, notes, tasks,
      references, an image and cross-links. A friendly first map to explore. ===== */
-  ml_overview: {
-    name:'Machine Learning — overview', desc:'A guided demo map: concepts, notes, tasks, a reference, an image & cross-links', color:'#3a6ea5', group:'study', icon:'🤖',
-    nodes:[
-      { k:'root', text:'Machine Learning', fontSize:22,
-        notes:'<h2>How to use this map</h2><p>This is a <b>demo</b> showing what MindSpark can do. Try: double-click any node to edit, drag to rearrange, press <b>Tab</b> to add a child, and click the <b>📝</b>, <b>☑</b> and <b>📖</b> badges. The <i>neural network</i> branch has an image and cross-links.</p><ul><li>Bold / italic / lists</li><li>Notes, tasks & citations</li><li>Images & cross-links</li></ul>' },
-
-      /* ---- Supervised ---- */
-      { k:'sup', parent:'root', text:'Supervised learning', color:'#cfe0ee', bold:true },
-      { k:'reg', parent:'sup', text:'Regression — predict a <i>continuous</i> value' },
-      { k:'reg1', parent:'reg', text:'Linear regression' },
-      { k:'reg2', parent:'reg', text:'Example: house prices' },
-      { k:'cls', parent:'sup', text:'Classification — predict a <i>category</i>' },
-      { k:'cls1', parent:'cls', text:'Logistic regression' },
-      { k:'cls2', parent:'cls', text:'Decision trees & random forests' },
-      { k:'cls3', parent:'cls', text:'Support vector machines' },
-
-      /* ---- Unsupervised ---- */
-      { k:'uns', parent:'root', text:'Unsupervised learning', color:'#d8e6c8', bold:true },
-      { k:'clu', parent:'uns', text:'Clustering' },
-      { k:'clu1', parent:'clu', text:'k-Means' },
-      { k:'clu2', parent:'clu', text:'DBSCAN' },
-      { k:'dim', parent:'uns', text:'Dimensionality reduction' },
-      { k:'dim1', parent:'dim', text:'PCA' },
-      { k:'dim2', parent:'dim', text:'t-SNE / UMAP' },
-
-      /* ---- Reinforcement ---- */
-      { k:'rl', parent:'root', text:'Reinforcement learning', color:'#f0d9c4', bold:true },
-      { k:'rl1', parent:'rl', text:'Agent & environment' },
-      { k:'rl2', parent:'rl', text:'Reward signal', highlight:'#fff3a8' },
-      { k:'rl3', parent:'rl', text:'Q-learning' },
-
-      /* ---- Neural networks (concept branch) ---- */
-      { k:'nn', parent:'root', text:'Neural networks', color:'#e3d4f0', bold:true,
-        notes:'<p>A network of <b>neurons</b> arranged in layers. Each connection has a <i>weight</i> learned during training.</p>' },
-      { k:'neu', parent:'nn', text:'A <b>neuron</b>: weighted sum &rarr; <i>activation</i>' },
-      { k:'act', parent:'nn', text:'ReLU\nSigmoid\nTanh\nSoftmax', listType:'ul' },
-      { k:'lay', parent:'nn', text:'Layers' },
-      { k:'lay1', parent:'lay', text:'Input layer' },
-      { k:'lay2', parent:'lay', text:'Hidden layers' },
-      { k:'lay3', parent:'lay', text:'Output layer' },
-      { k:'arch', parent:'nn', text:'Architecture — a 3 &rarr; 2 &rarr; 1 net', image:'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxODAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTgwIDEyMCI+PHJlY3Qgd2lkdGg9IjE4MCIgaGVpZ2h0PSIxMjAiIHJ4PSIxMCIgZmlsbD0iI2Y0ZWZlNiIvPjxnIHN0cm9rZT0iI2M5YmZhZSIgc3Ryb2tlLXdpZHRoPSIxLjQiPjxsaW5lIHgxPSIzNCIgeTE9IjMwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjMwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjYwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjYwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjkwIiB4Mj0iOTAiIHkyPSI0MCIvPjxsaW5lIHgxPSIzNCIgeTE9IjkwIiB4Mj0iOTAiIHkyPSI4MCIvPjxsaW5lIHgxPSI5MCIgeTE9IjQwIiB4Mj0iMTQ2IiB5Mj0iNjAiLz48bGluZSB4MT0iOTAiIHkxPSI4MCIgeDI9IjE0NiIgeTI9IjYwIi8+PC9nPjxnPjxjaXJjbGUgY3g9IjM0IiBjeT0iMzAiIHI9IjEwIiBmaWxsPSIjNWI4ZGIyIi8+PGNpcmNsZSBjeD0iMzQiIGN5PSI2MCIgcj0iMTAiIGZpbGw9IiM1YjhkYjIiLz48Y2lyY2xlIGN4PSIzNCIgY3k9IjkwIiByPSIxMCIgZmlsbD0iIzViOGRiMiIvPjxjaXJjbGUgY3g9IjkwIiBjeT0iNDAiIHI9IjExIiBmaWxsPSIjNmE4YzNmIi8+PGNpcmNsZSBjeD0iOTAiIGN5PSI4MCIgcj0iMTEiIGZpbGw9IiM2YThjM2YiLz48Y2lyY2xlIGN4PSIxNDYiIGN5PSI2MCIgcj0iMTIiIGZpbGw9IiNlMDYxM2EiLz48L2c+PHRleHQgeD0iMzQiIHk9IjExMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzdhNzE2MyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+aW5wdXQ8L3RleHQ+PHRleHQgeD0iOTAiIHk9IjExMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iOSIgZmlsbD0iIzdhNzE2MyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+aGlkZGVuPC90ZXh0Pjx0ZXh0IHg9IjE0NiIgeT0iMTEyIiBmb250LWZhbWlseT0ic2Fucy1zZXJpZiIgZm9udC1zaXplPSI5IiBmaWxsPSIjN2E3MTYzIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5vdXRwdXQ8L3RleHQ+PC9zdmc+' },
-      { k:'trn', parent:'nn', text:'Training loop' },
-      { k:'trn1', parent:'trn', text:'Forward pass' },
-      { k:'trn2', parent:'trn', text:'Loss function' },
-      { k:'bp', parent:'trn', text:'<b>Backpropagation</b>',
-        notes:'<p>Propagate the error <i>backwards</i> with the chain rule to get gradients, then update weights with <b>gradient descent</b>.</p>' },
-      { k:'gd', parent:'trn', text:'Gradient descent' },
-
-      /* ---- Workflow ---- */
-      { k:'wf', parent:'root', text:'Typical workflow', color:'#c4e0dd', bold:true },
-      { k:'wf1', parent:'wf', text:'Load {{dataset}} & clean data' },
-      { k:'wf2', parent:'wf', text:'Train / test split' },
-      { k:'over', parent:'wf', text:'Overfitting', textColor:'#b8451f' },
-      { k:'regz', parent:'wf', text:'Regularization (L1 / L2, dropout)' },
-      { k:'eval', parent:'wf', text:'Evaluation' },
-      { k:'eval1', parent:'eval', text:'Accuracy / Precision / Recall / F1' },
-      { k:'eval2', parent:'eval', text:'Cross-validation' },
-
-      /* ---- Learning checklist (task states → progress roll-up) ---- */
-      { k:'chk', parent:'root', text:'Learning checklist', color:'#f0e3c4', bold:true },
-      { k:'chk1', parent:'chk', text:'Linear algebra basics', task:'done' },
-      { k:'chk2', parent:'chk', text:'Probability & statistics', task:'done' },
-      { k:'chk3', parent:'chk', text:'Build a classifier', task:'doing' },
-      { k:'chk4', parent:'chk', text:'Understand backprop math', task:'todo' },
-      { k:'chk5', parent:'chk', text:'Deploy a model', task:'todo' },
-
-      /* ---- Tools (bullet list) + reference ---- */
-      { k:'tool', parent:'root', text:'Python\nNumPy & Pandas\nscikit-learn\nPyTorch / TensorFlow', listType:'ul', color:'#dfe7ef' },
-      { k:'ref', parent:'root', text:'Goodfellow et&nbsp;al. — <i>Deep Learning</i>', ref:true,
-        citation:{ authors:'Goodfellow, I., Bengio, Y. & Courville, A.', title:'Deep Learning', year:'2016', source:'MIT Press', doi:'https://www.deeplearningbook.org' } }
-    ],
-    links:[
-      { from:'bp',  to:'gd'  },
-      { from:'over', to:'regz' }
-    ]
-  }
-
 };
 // Template categories (ordered) for the drill-down menu.
 const TEMPLATE_CATEGORIES = [
@@ -6430,6 +6353,29 @@ function showUpiQrView(modal){
     modal.remove();
   };
 }
+// First-run sample: seed the bundled "ML - Overview (Demo)" map as the user's own
+// editable copy, so a brand-new sidebar isn't empty. Fetched (not embedded) to
+// keep app.js lean; on failure (offline/missing) the caller falls back to a blank map.
+async function seedDemoMap(){
+  let demo;
+  try{
+    const r = await fetch('demo-map.json', { cache:'no-store' });
+    if(!r.ok) return false;
+    demo = await r.json();
+  }catch(e){ return false; }
+  if(!demo || !demo.rootId || !demo.nodes) return false;
+  demo.id = uid();                 // a fresh id → the user's own copy
+  demo.updated = Date.now();
+  map = demo; sel = null;
+  history=[]; hpos=-1; pushHistory();
+  $('#mapTitle').value = map.title || 'ML - Overview (Demo)';
+  autoLayout();
+  const savedV=loadMapView(map.id);
+  if(savedV) applyMapView(savedV); else fit();
+  refreshList();
+  try{ await Store.save(map); }catch(e){}
+  return true;
+}
 async function proceedBoot(){
   loadUserTemplates();   // merge any saved "My templates" into the catalog
   // A shared map queued for copying takes priority over loading the last map.
@@ -6452,6 +6398,12 @@ async function proceedBoot(){
       }catch(e){}
       let idx2=[]; try{ idx2=await Store.list(); }catch(e){}
       if(idx2.length && await loadMap(idx2[0].id)) return;
+    }
+    // Truly empty store: on first run, seed the demo sample instead of a blank map.
+    if(!localStorage.getItem('mindspark:demoSeeded')){
+      const seeded = await seedDemoMap();
+      try{ localStorage.setItem('mindspark:demoSeeded','1'); }catch(e){}
+      if(seeded) return;
     }
     createMap();
   }
