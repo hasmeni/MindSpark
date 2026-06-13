@@ -402,7 +402,7 @@ function applyMapView(saved){
 }
 let sel=null;                 // selected node id
 let history=[],hpos=-1;       // undo stack
-let saveTimer=null;
+let saveTimer=null, _pendingSaveMap=null;
 
 const viewport=$('#viewport'), edges=$('#edges'), stage=$('#stage');
 
@@ -4267,6 +4267,7 @@ function createMap(){
   const m={id,title:rootText,titleAuto:true,color:PALETTE[Math.floor(Math.random()*PALETTE.length)],rootId:rid,
     nodes:{[rid]:{id:rid,text:rootText,parent:null,x:0,y:0,side:'root',color:'#fff'}}};
   // Show it immediately — never wait on the network to render the UI.
+  flushPendingSave();
   map=m; sel=rid; history=[]; hpos=-1; pushHistory();
   $('#mapTitle').value=map.title;
   autoLayout();
@@ -4292,6 +4293,7 @@ async function loadMap(id){
       delete n.comment;
     }
   }
+  flushPendingSave();          // persist the outgoing map's pending edit to itself
   map=m; sel=map.rootId;
   // Initialise history WITHOUT triggering a save — loading is not a change,
   // so the sidebar order (sorted by `updated`) must not be reshuffled.
@@ -4320,13 +4322,17 @@ $('#mapTitle').addEventListener('input',e=>{
 /* ---------- autosave ---------- */
 function scheduleSave(){
   if(!map || READONLY)return;
+  const target = map;          // bind THIS map: switching maps before the timer
+  _pendingSaveMap = target;    // fires must NOT redirect the write onto another map
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
   clearTimeout(saveTimer);
   // Cloud mode talks to GitHub — debounce longer to stay well under 5000 req/h
   const delay = (MODE==='cloud') ? 1500 : 600;
   saveTimer=setTimeout(async()=>{
+    saveTimer=null;
     try{
-      await Store.save(map);
+      await Store.save(target);
+      if(_pendingSaveMap===target) _pendingSaveMap=null;
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
     }catch(e){
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Retrying…';
@@ -4336,11 +4342,20 @@ function scheduleSave(){
         ? 'Couldn’t sync to GitHub just now — your changes are saved on this device and will retry.'
         : 'Couldn’t reach the server — your changes are saved on this device and will retry.');
       setTimeout(async()=>{
-        try{ await Store.save(map); $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; }
+        try{ await Store.save(target); if(_pendingSaveMap===target) _pendingSaveMap=null; $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; }
         catch(e2){ $('#saveText').textContent='Save failed'; }
       }, 4000);
     }
   },delay);
+}
+// Commit any pending debounced edit to ITS OWN map right now — call before
+// switching maps so the write lands on the map that was edited, never on the
+// one just opened (which would reorder/overwrite it).
+function flushPendingSave(){
+  if(!saveTimer) return;
+  clearTimeout(saveTimer); saveTimer=null;
+  const target=_pendingSaveMap; _pendingSaveMap=null;
+  if(target && !READONLY){ Promise.resolve().then(()=>Store.save(target)).catch(()=>{}); }
 }
 
 /* ============================================================
