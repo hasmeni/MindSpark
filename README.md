@@ -30,7 +30,7 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 
 ## Creating a map
 
-Press **`Tab`** to add a child topic and **`Enter`** to add a sibling — the tree auto-arranges into a balanced layout as you go. New sign-ins start with the **“ML - Overview (Demo)”** sample below so there's something to explore right away.
+Press **`Tab`** to add a child topic and **`Enter`** to add a sibling — the tree auto-arranges into a balanced layout as you go. New sign-ins start with the **“ML - Overview (Demo)”** sample above so there's something to explore right away.
 <!-- 
 <p align="center">
   <img src="docs/create-map.gif" alt="Animation building the “ML - Overview (Demo)” map from a central “Machine Learning” idea outward into branches and sub-topics." width="820">
