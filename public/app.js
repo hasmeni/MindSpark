@@ -3071,12 +3071,11 @@ function openRowMenu(btn, m){
   const pop=document.createElement('div'); pop.className='row-pop'; pop._for=m.id;
   pop.innerHTML='<button data-a="dup"><span class="rp-ic">\u2398</span>Duplicate</button>'+
                 '<button data-a="del" class="danger"><span class="rp-ic">\uD83D\uDDD1</span>Delete</button>';
-  document.body.appendChild(pop);
-  const r=btn.getBoundingClientRect();
-  pop.style.position='fixed';
-  pop.style.right=(window.innerWidth - r.right)+'px';
-  if(r.bottom+5+pop.offsetHeight > window.innerHeight-6){ pop.style.bottom=(window.innerHeight - r.top + 5)+'px'; }
-  else { pop.style.top=(r.bottom+5)+'px'; }
+  const row = btn.closest('.map-item') || btn.parentElement;
+  row.appendChild(pop);                 // anchored to the row via CSS (position:absolute) — zoom-proof
+  // flip above only if there isn't room below (ratio check; zoom cancels out)
+  const rb = btn.getBoundingClientRect();
+  if(rb.bottom + pop.offsetHeight + 10 > window.innerHeight){ pop.classList.add('flip-up'); }
   pop.querySelector('[data-a="dup"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); duplicateMap(m.id); };
   pop.querySelector('[data-a="del"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu();
     if(!confirm('Delete "'+(m.title||'Untitled')+'"?')) return;

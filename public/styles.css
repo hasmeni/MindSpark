@@ -133,7 +133,8 @@
   .map-item:hover .row-menu, .map-item.active .row-menu{opacity:.65}
   .map-item .row-menu:hover{opacity:1;background:var(--line);color:var(--ink)}
   @media (pointer:coarse){ .map-item .row-menu{opacity:.6} }   /* always tappable on touch */
-  .row-pop{background:var(--paper,#fff);border:1px solid var(--chrome-edge,#d0d7de);border-radius:10px;box-shadow:var(--shadow,0 8px 28px rgba(0,0,0,.16));padding:5px;min-width:152px;z-index:200;display:flex;flex-direction:column;gap:2px}
+  .row-pop{position:absolute;top:calc(100% + 2px);right:4px;background:var(--paper,#fff);border:1px solid var(--chrome-edge,#d0d7de);border-radius:10px;box-shadow:var(--shadow,0 8px 28px rgba(0,0,0,.16));padding:5px;min-width:152px;z-index:200;display:flex;flex-direction:column;gap:2px}
+  .row-pop.flip-up{top:auto;bottom:calc(100% + 2px)}
   .row-pop button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:none;background:none;color:var(--ink);font-size:13.5px;padding:8px 10px;border-radius:7px;cursor:pointer;font-family:inherit}
   .row-pop button:hover{background:var(--hover)}
   .row-pop button.danger{color:var(--accent-deep,#b8451f)}
