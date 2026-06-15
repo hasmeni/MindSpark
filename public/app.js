@@ -6361,7 +6361,7 @@ window.addEventListener('keydown', e=>{
 
 // ===== GitHub source/issue link =====
 // Set this to your repo and the sidebar footer links will go live.
-const GITHUB_URL = 'https://github.com/YOUR_USERNAME/mindspark';
+const GITHUB_URL = 'https://github.com/prasadpatil25/mindspark';
 (function wireGitHub(){
   const ghOk = GITHUB_URL && !GITHUB_URL.includes('YOUR_USERNAME');
   const repo = $('#ghRepoLink'), issue = $('#ghIssueLink');
