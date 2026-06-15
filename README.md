@@ -4,6 +4,8 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 
 ![status](https://img.shields.io/badge/license-MIT-green) ![deps](https://img.shields.io/badge/dependencies-0-blue) ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
 
+**▶ Try it live → [mindspark.githubpage.workers.dev](https://mindspark.githubpage.workers.dev/)** — runs entirely in your browser. Sign in with GitHub and your maps are saved as private JSON files in a `mindspark-maps` repo on your own account (no server in between).
+
 <p align="center">
   <img src="docs/screenshot.png" alt="MindSpark showing the “ML - Overview (Demo)” sample map: a “Machine Learning” central node branching into Supervised, Unsupervised and Reinforcement learning, Neural networks, a typical workflow, a learning checklist and references." width="900">
 </p>
@@ -30,7 +32,7 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 
 ## Creating a map
 
-Press **`Tab`** to add a child topic and **`Enter`** to add a sibling — the tree auto-arranges into a balanced layout as you go. New sign-ins start with the **“ML - Overview (Demo)”** sample below so there's something to explore right away.
+Press **`Tab`** to add a child topic and **`Enter`** to add a sibling — the tree auto-arranges into a balanced layout as you go. New sign-ins start with the **“ML - Overview (Demo)”** sample above so there's something to explore right away.
 <!-- 
 <p align="center">
   <img src="docs/create-map.gif" alt="Animation building the “ML - Overview (Demo)” map from a central “Machine Learning” idea outward into branches and sub-topics." width="820">
