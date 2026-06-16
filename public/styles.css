@@ -118,6 +118,7 @@
   /* ===== Sidebar ===== */
   .side{width:268px;min-height:0;background:var(--chrome);border-right:1px solid var(--chrome-edge);display:flex;flex-direction:column;transition:width .22s cubic-bezier(.4,0,.2,1)}
   .side.collapsed{width:0;border:none}
+  @media (prefers-reduced-motion: reduce){ .side, #viewport{transition:none !important} }
   .brand{display:flex;align-items:center;gap:10px;padding:18px 18px 14px}
   .brand .mark{flex:0 0 auto; filter:drop-shadow(0 1px 3px rgba(40,30,15,.2))}
   .brand h1{font-family:var(--serif);font-weight:900;font-size:22px;margin:0;letter-spacing:-.5px}

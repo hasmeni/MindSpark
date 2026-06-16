@@ -378,6 +378,26 @@ function _markStage(){ const z=_stageSize(); if(z.w>1&&z.h>1) _prevStage=z; }
 // {x,y} entries are honoured once, then migrated to {cx,cy} on the next save.
 // While the stage width animates (sidebar collapse/expand), keep the given
 // map-space point centred each frame so the map holds its position on screen.
+// Smoothly keep the centred map-point in place while the sidebar animates, WITHOUT
+// any per-frame JS or forced layout (which is what makes the old loop stutter on
+// low-end / battery). We know the stage's final width, so we set the viewport's
+// final transform and let the compositor animate it in lockstep with the sidebar
+// (identical easing + duration). Because view.x is linear in stage width, the
+// centred point stays put for the whole animation — GPU-only, no jank.
+function _reframeSmooth(cx, cy, W1, H1){
+  const tx = W1/2 - cx*view.k, ty = H1/2 - cy*view.k;
+  view.x = tx; view.y = ty;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduce){ applyView(); _markStage(); saveMapView(); updateMinimap(); return; }
+  let done=false;
+  const settle=()=>{ if(done) return; done=true; viewport.style.transition=''; _markStage(); saveMapView(); updateMinimap(); };
+  viewport.style.transition = 'transform .22s cubic-bezier(.4,0,.2,1)';
+  applyView();                                  // sets transform to target -> compositor animates it
+  viewport.addEventListener('transitionend', function te(e){
+    if(e.target===viewport && e.propertyName==='transform'){ viewport.removeEventListener('transitionend', te); settle(); }
+  });
+  setTimeout(settle, 280);                       // safety net if transitionend doesn't fire
+}
 function _reframeDuring(ms, cx, cy){
   const now=()=> (window.performance&&performance.now)?performance.now():Date.now();
   const t0=now();
@@ -958,21 +978,47 @@ function appendMathAware(container, text){
   plain(text.slice(last));
 }
 
+// Render text that may contain BOTH inline formatting/markup AND $...$ math.
+// Math is extracted first into placeholder tokens (so its contents are never
+// parsed as HTML), the remaining text is formatted/linked, then the rendered
+// MathML is dropped back in. Lets math coexist with bold/italic/bullets/links —
+// <b>$x^2$</b>, bulleted equations, etc.  (PUA placeholders survive HTML parsing.)
+function renderFormattedWithMath(container, text){
+  const slots=[];
+  const re=new RegExp(MATH_DELIM_RE.source,'g');
+  const masked=(text||'').replace(re,(full,dd,inl)=>{
+    const tex = dd!=null ? dd : inl, display = dd!=null;
+    let mathml=null; try{ mathml=latexToMathML(tex, display); }catch(e){ mathml=null; }
+    slots.push({mathml, original: full});
+    return '\uE000'+(slots.length-1)+'\uE001';
+  });
+  if(hasInlineMarkup(masked)) container.innerHTML = sanitizeInlineHTML(masked);
+  else container.appendChild(document.createTextNode(masked));
+  autoLinkPlainTextNodes(container);
+  if(!slots.length) return;
+  const walker=document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+  const hits=[]; let tn;
+  while((tn=walker.nextNode())){ if(tn.nodeValue && tn.nodeValue.indexOf('\uE000')>=0) hits.push(tn); }
+  hits.forEach(node=>{
+    const parts=node.nodeValue.split(/\uE000(\d+)\uE001/);   // [text, idx, text, idx, ...]
+    const frag=document.createDocumentFragment();
+    for(let i=0;i<parts.length;i++){
+      if(i%2===0){ if(parts[i]) frag.appendChild(document.createTextNode(parts[i])); }
+      else {
+        const slot=slots[+parts[i]];
+        if(slot && slot.mathml){ const tmp=document.createElement('span'); tmp.innerHTML=slot.mathml; while(tmp.firstChild) frag.appendChild(tmp.firstChild); }
+        else frag.appendChild(document.createTextNode(slot ? slot.original : ''));
+      }
+    }
+    node.parentNode.replaceChild(frag, node);
+  });
+}
 function renderNodeText(container, text, listType){
   container.textContent='';
   const isHTML = hasInlineMarkup(text);
   if(!listType){
-    if(containsMath(text)){
-      // Inline/display LaTeX ($...$, $$...$$) -> native MathML; surrounding text
-      // still goes through the normal sanitized rendering path.
-      appendMathAware(container, text);
-    } else if(isHTML){
-      container.innerHTML = sanitizeInlineHTML(text);
-      // Auto-link any remaining plain-text URLs inside (skip text already inside <a>)
-      autoLinkPlainTextNodes(container);
-    } else {
-      appendTextWithLinks(container, text);
-    }
+    // Build formatting + math together so e.g. <b>$x^2$</b> renders both.
+    renderFormattedWithMath(container, text);
     return;
   }
   // List mode: split on newlines (or <br> if HTML), one bullet per line
@@ -992,13 +1038,11 @@ function renderNodeText(container, text, listType){
     prefix.className='list-marker';
     prefix.textContent = listType==='ol' ? `${i+1}.\u00A0` : '•\u00A0';
     container.appendChild(prefix);
-    if(isHTML){
-      const span=document.createElement('span'); span.innerHTML=sanitizeInlineHTML(line);
-      container.appendChild(span);
-      autoLinkPlainTextNodes(span);
-    } else {
-      appendTextWithLinks(container, line);
-    }
+    const span=document.createElement('span');
+    container.appendChild(span);
+    // Bullet lines support the same formatting + math, so equations inside a
+    // list render as math instead of raw $...$.
+    renderFormattedWithMath(span, line);
   });
 }
 // Walk text nodes inside `root` and convert any bare URLs into <a> links.
@@ -5896,13 +5940,25 @@ $('#minimap')?.addEventListener('click', e=>e.stopPropagation());
   });
 })();
 $('#menuExport').onclick=exportMenu;
+let _sideExpandedW = 268;   // cached logical width of the expanded sidebar
 $('#toggleSide').onclick=()=>{
-  // Capture the map-point at the viewport centre BEFORE the width changes, then
-  // keep it centred while the sidebar animates — so the map doesn't drift.
+  const side=$('#side');
+  // On phones the sidebar is a transform overlay (stage keeps full width), so no
+  // reframe is needed there — let CSS slide it.
+  const overlay = window.matchMedia('(max-width: 720px)').matches;
+  const z=(typeof _uiZ==='function'?(_uiZ()||1):1);
+  const sbNow = side.getBoundingClientRect().width / z;
+  if(sbNow > 1) _sideExpandedW = sbNow;          // remember the expanded width
+  // Capture the map-point at the viewport centre BEFORE the width changes.
   let cx,cy,has=false;
-  if(map){ const {w:SW,h:SH}=_stageSize(); cx=(SW/2-view.x)/view.k; cy=(SH/2-view.y)/view.k; has=isFinite(cx)&&isFinite(cy); }
-  $('#side').classList.toggle('collapsed');
-  if(has) _reframeDuring(300, cx, cy);
+  if(map && !overlay){ const {w:SW,h:SH}=_stageSize(); cx=(SW/2-view.x)/view.k; cy=(SH/2-view.y)/view.k; has=isFinite(cx)&&isFinite(cy); }
+  side.classList.toggle('collapsed');
+  if(has){
+    const collapsing = side.classList.contains('collapsed');
+    const {w:W0, h:H0} = _stageSize();           // still the pre-animation size this frame
+    const W1 = collapsing ? (W0 + _sideExpandedW) : (W0 - _sideExpandedW);
+    _reframeSmooth(cx, cy, W1, H0);
+  }
 };
 // On phones, default the sidebar to collapsed (slid off-screen overlay).
 // And tapping the dimmed canvas while it's open should close it.
