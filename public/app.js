@@ -2569,7 +2569,15 @@ stage.addEventListener('mousedown',e=>{
     if(multiSel.size) clearMultiSelect();
   }
 });
-window.addEventListener('mousemove',e=>{
+// Drag/resize do O(n) work (rebuild all edges, find a drop target) per move.
+// Mouse moves can fire faster than the screen refreshes, so we coalesce the heavy
+// work to one update per animation frame and reuse the hidden-set for the whole
+// gesture (it can't change mid-drag). Keeps drag smooth on big maps / low-end.
+let _moveRAF=0, _movePt=null, _dragHidden=null;
+function _applyMove(){
+  _moveRAF=0;
+  const e=_movePt; if(!e) return;
+  const hidden = _dragHidden || (_dragHidden = hiddenSet());
   if(resizing){
     const sc=view.k*_uiZ();
     const dx=(e.clientX-resizing.sx)/sc, dy=(e.clientY-resizing.sy)/sc;
@@ -2578,28 +2586,40 @@ window.addEventListener('mousemove',e=>{
     n.height=Math.max(30, Math.round(resizing.sh+dy));
     const el=document.querySelector(`.node[data-id="${resizing.id}"]`);
     if(el){ el.style.width=n.width+'px'; el.style.maxWidth='none'; el.style.height=n.height+'px'; n.w=n.width; n.h=n.height; }
-    drawEdges(hiddenSet());
+    drawEdges(hidden);
     positionNodeBar();
-  } else if(dragNode){
+  } else if(dragNode && moved){
     const sc=view.k*_uiZ();
     const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
-    if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
-    if(moved){
-      // Stage the subtree the first time a real drag begins (not on click).
-      if(!dragStart.subtree) dragStart=beginSubtreeDrag(dragNode, dragStart.mx, dragStart.my);
-      applySubtreeDelta(dragStart, dx, dy);
-      drawEdges(hiddenSet());
-      positionNodeBar();
-      // Detect a drop target under the cursor (only after a real drag has started)
-      if(dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
-    }
-  } else if(panning){
+    // Stage the subtree the first time a real drag begins (not on click).
+    if(!dragStart.subtree) dragStart=beginSubtreeDrag(dragNode, dragStart.mx, dragStart.my);
+    applySubtreeDelta(dragStart, dx, dy);
+    drawEdges(hidden);
+    positionNodeBar();
+    // Detect a drop target under the cursor (only after a real drag has started)
+    if(dragNode!==map.rootId) setDropTarget(findDropTarget(e.clientX, e.clientY));
+  }
+}
+window.addEventListener('mousemove',e=>{
+  if(panning){                       // pan is GPU-only + cheap: keep it immediate
     const z=_uiZ();
     view.x=panStart.vx+(e.clientX-panStart.x)/z; view.y=panStart.vy+(e.clientY-panStart.y)/z;
     applyView();
+    return;
   }
+  if(!resizing && !dragNode) return;
+  // Move-threshold check stays on the raw event so a tiny nudge still registers.
+  if(dragNode && !moved){
+    const sc=view.k*_uiZ();
+    const dx=(e.clientX-dragStart.mx)/sc, dy=(e.clientY-dragStart.my)/sc;
+    if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+  }
+  _movePt={clientX:e.clientX, clientY:e.clientY};
+  if(!_moveRAF) _moveRAF=requestAnimationFrame(_applyMove);   // coalesce to one update / frame
 });
 window.addEventListener('mouseup',()=>{
+  if(_moveRAF){ cancelAnimationFrame(_moveRAF); _moveRAF=0; _applyMove(); }
+  _movePt=null; _dragHidden=null;
   if(resizing){
     resizing = null;
     // Re-tidy so the resized node's new footprint doesn't overlap its neighbours.
