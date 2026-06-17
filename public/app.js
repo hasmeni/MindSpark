@@ -770,6 +770,7 @@ function fragmentToLines(frag){
   return lines.filter(l => l !== undefined);
 }
 const INLINE_HTML_RE = /<(b|i|u|s|strong|em|br|a|span|font|div|ul|ol|li|p)\b/i;
+const HTML_ENTITY_RE = /&(#\d+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/;  // &rarr; &#8594; &amp; ...
 // HTML entities (named like &nbsp;/&amp;, decimal &#160;, or hex &#xA0;). Text that
 // contains these but no tags still needs to go through the HTML path so the entity
 // is decoded for display instead of showing the literal "&nbsp;".
@@ -992,7 +993,9 @@ function renderFormattedWithMath(container, text){
     slots.push({mathml, original: full});
     return '\uE000'+(slots.length-1)+'\uE001';
   });
-  if(hasInlineMarkup(masked)) container.innerHTML = sanitizeInlineHTML(masked);
+  // Entities (&rarr; &#8594; ...) only decode via innerHTML, so route them through
+  // the sanitizer too — createTextNode would show them literally.
+  if(hasInlineMarkup(masked) || HTML_ENTITY_RE.test(masked)) container.innerHTML = sanitizeInlineHTML(masked);
   else container.appendChild(document.createTextNode(masked));
   autoLinkPlainTextNodes(container);
   if(!slots.length) return;
@@ -2129,7 +2132,11 @@ function startEdit(id){
       const plain = textEl.textContent.trim();
       // If the user only typed plain text, store plain; otherwise store sanitized HTML.
       const hasFormatting = INLINE_HTML_RE.test(html);
-      const newText = !plain ? 'Untitled' : (hasFormatting ? sanitizeInlineHTML(html) : plain);
+      let newText = !plain ? 'Untitled' : (hasFormatting ? sanitizeInlineHTML(html) : plain);
+      // A user-typed entity code (&rarr;) gets double-escaped to &amp;rarr; through the
+      // contentEditable round-trip; restore it so it still renders as a symbol even when
+      // the selection is wrapped in inline formatting (matches plain-text behaviour).
+      if(newText !== 'Untitled') newText = newText.replace(/&amp;(#\d+;|#x[0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9]*;)/g, '&$1');
       map.nodes[id].text = newText;
       // Title sync — for the root and only when user hasn't renamed the map manually
       if(id===map.rootId && map.titleAuto===true){
@@ -4228,6 +4235,7 @@ function closeAllMenus(){
   if(typeof activePicker!=='undefined' && activePicker){ try{activePicker.remove();}catch(_){} activePicker=null; }
 }
 function showTemplatesMenu(){
+  if(document.querySelector('.tpl-pop')){ closeAllMenus(); return; }      // click again closes it
   closeAllMenus();
   const pop = document.createElement('div');
   pop.className = 'tpl-pop';
@@ -4425,6 +4433,7 @@ function flushPendingSave(){
    EXPORT  (JSON + PNG via manual canvas render)
    ============================================================ */
 function exportMenu(){
+  if(document.querySelector('.export-pop')){ closeAllMenus(); return; }   // click again closes it
   closeAllMenus();
   const pop=document.createElement('div');
   pop.className='export-pop';
@@ -5959,7 +5968,7 @@ $('#minimap')?.addEventListener('click', e=>e.stopPropagation());
     if(e.key==='Escape'){ e.preventDefault(); applyView(); zv.blur(); }
   });
 })();
-$('#menuExport').onclick=exportMenu;
+$('#menuExport').onclick=(e)=>{ e.stopPropagation(); exportMenu(); };
 let _sideExpandedW = 268;   // cached logical width of the expanded sidebar
 $('#toggleSide').onclick=()=>{
   const side=$('#side');
