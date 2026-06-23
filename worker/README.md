@@ -58,3 +58,26 @@ token option. Both produce a GitHub token that the app uses identically.
 - The OAuth App `repo` scope lets MindSpark create and read/write its private
   `mindspark-maps` repository. For tighter, per-repo access, use a GitHub *App*
   instead of an OAuth App (more setup; not required).
+
+## GPT map import (`POST /api/import`)
+
+The Worker can also accept a generated map from a Custom GPT and write it into your
+`mindspark-maps` repo, so it appears in the app. This is what the GPT Action calls.
+
+1. **Create a fine-grained PAT** → GitHub → Settings → Developer settings → *Fine-grained tokens*.
+   - Repository access: only `mindspark-maps`.
+   - Permissions: **Contents → Read and write**.
+   - (Sign in to MindSpark once first so the repo exists.)
+2. **Generate an import secret**: `openssl rand -hex 32`
+3. **Set them on the Worker**:
+   ```
+   wrangler secret put IMPORT_TOKEN     # paste the hex secret
+   wrangler secret put GITHUB_PAT       # paste the fine-grained PAT
+   wrangler deploy
+   ```
+   `ALLOWED_ORIGIN` should already be your app URL (used to build the returned link).
+4. **In the Custom GPT Action**: set `servers.url` to this Worker's URL, and under
+   Authentication choose **API Key → Bearer**, pasting the same `IMPORT_TOKEN`.
+
+The Worker writes `maps/<id>.json` + an `_index.json` entry, then returns
+`{ "id", "url" }` where `url` opens the laid-out map in your app.

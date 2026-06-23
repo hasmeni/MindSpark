@@ -4366,17 +4366,19 @@ async function loadMap(id){
   }
   flushPendingSave();          // persist the outgoing map's pending edit to itself
   map=m; sel=map.rootId;
+  const _imported = !!map._import; if(_imported) delete map._import;
   // Initialise history WITHOUT triggering a save — loading is not a change,
   // so the sidebar order (sorted by `updated`) must not be reshuffled.
   history=[JSON.stringify({nodes:map.nodes,rootId:map.rootId,title:map.title,color:map.color})];
   hpos=0; updateUndo();
   $('#mapTitle').value=map.title;
+  if(_imported){ balanceRootSides(); autoLayout(); }
   render();
   // Restore this map's saved camera if it has one; otherwise preserve the
   // session zoom across switches; otherwise auto-fit a fresh map.
   const saved=loadMapView(map.id);
-  if(saved){ applyMapView(saved); }
-  else if(userZoom!=null){ view.k=userZoom; recenter(); }
+  if(saved && !_imported){ applyMapView(saved); }
+  else if(userZoom!=null && !_imported){ view.k=userZoom; recenter(); }
   else fit();
   refreshList();
   return true;
@@ -6514,6 +6516,7 @@ async function proceedBoot(){
   loadUserTemplates();   // merge any saved "My templates" into the catalog
   // A shared map queued for copying takes priority over loading the last map.
   if(await consumePendingImport()) return;
+  try{ const _mid=new URLSearchParams(location.search).get('map'); if(_mid && await loadMap(_mid)) return; }catch(e){}
   let idx=[];
   try{ idx=await Store.list(); }catch(e){}
   if(idx && idx.length){
