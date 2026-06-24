@@ -6,10 +6,7 @@ compatibility_date = "2024-09-01"
 #   wrangler secret put GITHUB_CLIENT_ID
 #   wrangler secret put GITHUB_CLIENT_SECRET
 
-# For the GPT map-import endpoint (POST /api/import) also set:
+# For the GPT map-import endpoint (POST /api/import) — returns a read-only
+# #view= share link, so NO GitHub PAT is needed:
 #   wrangler secret put IMPORT_TOKEN   # bearer secret the Custom GPT sends
-#   wrangler secret put GITHUB_PAT     # fine-grained PAT: Contents read+write on mindspark-maps
-# Optional:
-#   GITHUB_OWNER   # repo owner; defaults to the PAT's own account
-#   GITHUB_REPO    # defaults to "mindspark-maps"
-#   ALLOWED_ORIGIN # your MindSpark app URL; used for OAuth and the returned map link
+#   ALLOWED_ORIGIN = your MindSpark app URL (used to build the share link)

@@ -59,25 +59,26 @@ token option. Both produce a GitHub token that the app uses identically.
   `mindspark-maps` repository. For tighter, per-repo access, use a GitHub *App*
   instead of an OAuth App (more setup; not required).
 
-## GPT map import (`POST /api/import`)
+## GPT map import (`POST /api/import`) — share-link, no PAT
 
-The Worker can also accept a generated map from a Custom GPT and write it into your
-`mindspark-maps` repo, so it appears in the app. This is what the GPT Action calls.
+The worker turns a generated map spec into the same gzip+base64url **`#view=`
+share link** the app's "Copy share link" feature produces. It writes nothing to
+GitHub and needs **no personal access token** — so it works for every user.
 
-1. **Create a fine-grained PAT** → GitHub → Settings → Developer settings → *Fine-grained tokens*.
-   - Repository access: only `mindspark-maps`.
-   - Permissions: **Contents → Read and write**.
-   - (Sign in to MindSpark once first so the repo exists.)
-2. **Generate an import secret**: `openssl rand -hex 32`
-3. **Set them on the Worker**:
-   ```
-   wrangler secret put IMPORT_TOKEN     # paste the hex secret
-   wrangler secret put GITHUB_PAT       # paste the fine-grained PAT
-   wrangler deploy
-   ```
-   `ALLOWED_ORIGIN` should already be your app URL (used to build the returned link).
-4. **In the Custom GPT Action**: set `servers.url` to this Worker's URL, and under
-   Authentication choose **API Key → Bearer**, pasting the same `IMPORT_TOKEN`.
+Flow: GPT calls `/api/import` -> worker returns `https://<app>/#view=<token>` ->
+the user opens it (read-only, no login needed) -> clicks **"Make an editable
+copy"** -> the map is saved into *their own* repo with *their own* token.
 
-The Worker writes `maps/<id>.json` + an `_index.json` entry, then returns
-`{ "id", "url" }` where `url` opens the laid-out map in your app.
+Setup:
+1. `wrangler secret put IMPORT_TOKEN` (a random secret; also goes in the GPT Action auth).
+2. Ensure `ALLOWED_ORIGIN` = your app URL (e.g. https://mindspark.githubpage.workers.dev) —
+   it's used to build the link and is likely already set for OAuth.
+3. Deploy: `npx wrangler deploy --config worker/wrangler.toml`.
+
+In the Custom GPT Action: `servers.url` = this worker's URL; Auth = API Key ->
+Bearer -> your `IMPORT_TOKEN`. The endpoint returns `{ id, url }` where `url`
+is the share link.
+
+Note: the whole map travels inside the URL, so very large maps make very long
+links. Typical generated maps are well under 2 KB; multi-hundred-node maps could
+approach browser URL limits.

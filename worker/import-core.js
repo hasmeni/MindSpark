@@ -1,76 +1,37 @@
-// MindSpark — shared map-import logic (used by the app worker's /api/import route).
-// Converts a GPT/structured-output map spec into MindSpark's stored map model and
-// writes it (plus an _index.json entry) into the mindspark-maps repo via GITHUB_PAT.
+// MindSpark — GPT map import via read-only share link (no GitHub, no PAT).
+// The worker turns a GPT/structured-output map spec into the SAME gzip+base64url
+// "#view=" token the app's "Copy share link" feature produces, so the generated
+// map opens as a read-only view in any browser. The viewer clicks "Make an
+// editable copy" to save it into THEIR own repo with THEIR token — so this works
+// for every user and needs no personal access token on the worker.
 
 const J = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
-const ghHeaders = (pat) => ({
-  Authorization: `token ${pat}`,
-  Accept: 'application/vnd.github+json',
-  'X-GitHub-Api-Version': '2022-11-28',
-  'User-Agent': 'MindSpark-Import'   // GitHub rejects requests without a User-Agent
-});
 
-function b64(str){
-  const bytes = new TextEncoder().encode(str);
-  let bin = ''; const C = 0x8000;
-  for (let i = 0; i < bytes.length; i += C) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + C));
-  return btoa(bin);
-}
-function unb64(s){
-  const bin = atob((s || '').replace(/\n/g, ''));
-  return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
-}
-async function ghGetFile(env, owner, repo, path){
-  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, { headers: ghHeaders(env.GITHUB_PAT) });
-  if (r.status === 404) return { sha: null, json: null };
-  if (!r.ok) throw new Error(`GitHub read ${path}: HTTP ${r.status}`);
-  const d = await r.json();
-  let json = null; try { json = JSON.parse(unb64(d.content)); } catch (e) {}
-  return { sha: d.sha, json };
-}
-function ghPutFile(env, owner, repo, path, contentStr, sha){
-  const body = { message: `MindSpark import: ${path}`, content: b64(contentStr) };
-  if (sha) body.sha = sha;
-  return fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
-    method: 'PUT', headers: { ...ghHeaders(env.GITHUB_PAT), 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
+// gzip + base64url, byte-identical to the app's _gzip + _b64urlFromBytes.
+async function gzipB64url(str){
+  const cs = new CompressionStream('gzip');
+  const w = cs.writable.getWriter(); w.write(new TextEncoder().encode(str)); w.close();
+  const bytes = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  let bin = ''; const CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 export async function handleImport(request, env){
-  if (!env.IMPORT_TOKEN) return J(500, { error: 'IMPORT_TOKEN is not configured on the worker' });
-  if (request.headers.get('Authorization') !== `Bearer ${env.IMPORT_TOKEN}`) return J(401, { error: 'unauthorized' });
-  if (!env.GITHUB_PAT) return J(500, { error: 'GITHUB_PAT is not configured on the worker' });
+  // Optional shared secret to stop your worker being used as a free service.
+  if (env.IMPORT_TOKEN && request.headers.get('Authorization') !== `Bearer ${env.IMPORT_TOKEN}`)
+    return J(401, { error: 'unauthorized' });
 
   let spec; try { spec = await request.json(); } catch (e) { return J(400, { error: 'body must be valid JSON' }); }
   let map;  try { map = buildMapFromSpec(spec); } catch (e) { return J(400, { error: String(e && e.message || e) }); }
 
-  let owner = env.GITHUB_OWNER;
-  if (!owner) {
-    const u = await fetch('https://api.github.com/user', { headers: ghHeaders(env.GITHUB_PAT) });
-    if (!u.ok) return J(500, { error: `GITHUB_PAT rejected by GitHub (HTTP ${u.status})` });
-    owner = (await u.json()).login;
-  }
-  const repo = env.GITHUB_REPO || 'mindspark-maps';
-
-  const wr = await ghPutFile(env, owner, repo, `maps/${map.id}.json`, JSON.stringify(map));
-  if (!wr.ok) {
-    const t = await wr.text();
-    return J(502, { error: `could not write map (HTTP ${wr.status}). The '${repo}' repo must exist (sign in to MindSpark once) and the PAT needs Contents read/write. ${t.slice(0,160)}` });
-  }
-  try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const idx = await ghGetFile(env, owner, repo, '_index.json');
-      let arr = Array.isArray(idx.json) ? idx.json : [];
-      arr = arr.filter(e => e && e.id !== map.id);
-      arr.unshift({ id: map.id, title: map.title, color: map.color, updated: map.updated });
-      arr.sort((a, b) => (b.updated || 0) - (a.updated || 0));
-      const ir = await ghPutFile(env, owner, repo, '_index.json', JSON.stringify(arr), idx.sha);
-      if (ir.ok || (ir.status !== 409 && ir.status !== 422)) break;
-    }
-  } catch (e) { /* index is best-effort; the map still opens via ?map=<id> */ }
-
+  // Same shape as the app's _shareePayload(); the shared view runs autoLayout()
+  // itself, so no node positions are needed.
+  const payload = { v: 1, title: map.title, color: map.color, style: map.style,
+                    layout: map.layout, rootId: map.rootId, nodes: map.nodes, links: map.links, vars: {} };
+  const token = 'g' + await gzipB64url(JSON.stringify(payload));
   const allowed = (env.ALLOWED_ORIGIN || '').replace(/\/+$/, '');
-  return J(201, { id: map.id, url: `${allowed}/?map=${map.id}` });
+  return J(201, { id: map.id, url: `${allowed}/#view=${token}` });
 }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -101,6 +62,7 @@ export function buildMapFromSpec(spec){
   }
   const N = byId.size;
   for (const n of inNodes) { let cur = n, hops = 0; while (cur && cur.id !== rootId) { cur = byId.get(cur.parent); if (++hops > N) throw new Error('cycle detected near node ' + n.id); } }
+
   const nodes = {};
   for (const n of inNodes) {
     const node = { id: n.id, text: String(n.text), parent: n.id === rootId ? null : n.parent,
@@ -120,10 +82,16 @@ export function buildMapFromSpec(spec){
     }
     nodes[n.id] = node;
   }
+
+  // Balance root branches like balanceRootSides(): first half right, second half left.
+  const rootKids = inNodes.filter(n => n.id !== rootId && n.parent === rootId).map(n => n.id);
+  const half = Math.ceil(rootKids.length / 2);
+  rootKids.forEach((id, i) => { nodes[id].side = (i < half) ? 'right' : 'left'; });
+
   const links = Array.isArray(spec.links)
     ? spec.links.filter(l => l && byId.has(l.from) && byId.has(l.to))
                 .map(l => { const o = { from: l.from, to: l.to }; if (l.label != null && l.label !== '') o.label = String(l.label); return o; })
     : [];
-  return { id: uid(), title, titleAuto: false, color: (typeof spec.color === 'string' && spec.color) ? spec.color : '#e0613a',
-           layout: 'balanced', rootId, nodes, links, _import: true, updated: Date.now() };
+  return { id: uid(), title, color: (typeof spec.color === 'string' && spec.color) ? spec.color : '#e0613a',
+           style: undefined, layout: 'balanced', rootId, nodes, links };
 }

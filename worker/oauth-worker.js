@@ -26,10 +26,16 @@
 //        GH_OAUTH.workerUrl = 'https://<your-worker>.workers.dev'
 // -----------------------------------------------------------------------------
 
+import { handleImport } from './import-core.js';
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // GPT map import (POST /api/import) — returns a read-only #view= share link.
+    if (url.pathname === '/api/import' && request.method === 'POST') {
+      return handleImport(request, env);
+    }
 
     if (url.pathname === '/callback') {
       const code = url.searchParams.get('code');
