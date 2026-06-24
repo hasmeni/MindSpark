@@ -754,16 +754,22 @@
 
   /* ===== Sidebar GitHub / bug links ===== */
   .side-links{
-    display:flex; gap:14px; margin-top:8px; padding-top:8px;
+    display:flex; flex-direction:column; gap:8px; margin-top:10px; padding-top:10px;
     border-top:1px solid var(--chrome-edge);
   }
   .side-links a{
-    display:inline-flex; align-items:center; gap:5px;
+    display:flex; align-items:center; gap:7px;
     color:var(--ink-soft); text-decoration:none;
-    font-size:12px; font-weight:500;
+    font-size:12px; font-weight:500; white-space:nowrap;
   }
   .side-links a:hover{color:var(--accent)}
-  .side-links a svg{flex-shrink:0; opacity:.85}
+  /* Uniform 16px icon gutter so emoji and the GitHub SVG line up in a column. */
+  .side-links a svg,
+  .side-links a .li-ic{
+    flex-shrink:0; width:16px; height:16px;
+    display:inline-flex; align-items:center; justify-content:center;
+    opacity:.85; font-size:13px; line-height:1;
+  }
 
   /* Inline lists inside a node (created via the selection-aware UL/OL button).
      Override the centered text-align since bulleted lines look better aligned left. */
@@ -1301,3 +1307,5 @@
   .oauth-or{ display:flex; align-items:center; gap:10px; margin:15px 2px 2px; color:var(--ink-soft); font-size:12px; }
   .oauth-or::before, .oauth-or::after{ content:''; flex:1; height:1px; background:var(--line); }
 
+/* Pinned maps: small badge before the title in the sidebar list. */
+.map-item.pinned .nm::before{ content:'\1F4CC'; margin-right:6px; font-size:.85em; opacity:.9; }

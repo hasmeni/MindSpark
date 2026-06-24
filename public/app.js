@@ -126,7 +126,7 @@ const CloudStore = {
         if(!r.ok) continue;
         const data=await r.json(); this.shas[id]=data.sha;
         const m=JSON.parse(this._decode(data.content));
-        out.push({id:m.id||id, title:m.title||'(untitled)', color:m.color, updated:m.updated||0});
+        const e={id:m.id||id, title:m.title||'(untitled)', color:m.color, updated:m.updated||0}; if(m.pinned) e.pinned=true; out.push(e);
       }catch(e){}
     }
     return out;
@@ -250,6 +250,7 @@ const CloudStore = {
     // past GitHub's 1 MB Contents-API limit, which then breaks reads.
     this.shas[map.id]=await this._writeFile(`maps/${map.id}.json`, JSON.stringify(map), this.shas[map.id]);
     const entry={id:map.id, title:map.title, color:map.color, updated:map.updated};
+    if(map.pinned) entry.pinned=true;
     const i=this.index.findIndex(m=>m.id===map.id);
     if(i>=0) this.index[i]=entry; else this.index.unshift(entry);
     this.index.sort((a,b)=>b.updated-a.updated);
@@ -3140,13 +3141,15 @@ function openRowMenu(btn, m){
   if(typeof closeAllMenus==='function') closeAllMenus();
   closeRowMenu();
   const pop=document.createElement('div'); pop.className='row-pop'; pop._for=m.id;
-  pop.innerHTML='<button data-a="dup"><span class="rp-ic">\u2398</span>Duplicate</button>'+
+  pop.innerHTML='<button data-a="pin"><span class="rp-ic">\uD83D\uDCCC</span>'+(m.pinned?'Unpin':'Pin')+'</button>'+
+                '<button data-a="dup"><span class="rp-ic">\u2398</span>Duplicate</button>'+
                 '<button data-a="del" class="danger"><span class="rp-ic">\uD83D\uDDD1</span>Delete</button>';
   const row = btn.closest('.map-item') || btn.parentElement;
   row.appendChild(pop);                 // anchored to the row via CSS (position:absolute) — zoom-proof
   // flip above only if there isn't room below (ratio check; zoom cancels out)
   const rb = btn.getBoundingClientRect();
   if(rb.bottom + pop.offsetHeight + 10 > window.innerHeight){ pop.classList.add('flip-up'); }
+  pop.querySelector('[data-a="pin"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); togglePin(m.id); };
   pop.querySelector('[data-a="dup"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); duplicateMap(m.id); };
   pop.querySelector('[data-a="del"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu();
     if(!confirm('Delete "'+(m.title||'Untitled')+'"?')) return;
@@ -3168,16 +3171,17 @@ async function refreshList(){
   // Merge the current in-memory map so title edits / new maps appear immediately
   // (don't wait for the debounced save to hit the database).
   if(map){
-    const local={id:map.id, title:map.title, color:map.color, updated:map.updated||Date.now()};
+    const local={id:map.id, title:map.title, color:map.color, updated:map.updated||Date.now(), pinned:map.pinned||undefined};
     const at=idx.findIndex(m=>m.id===map.id);
     if(at>=0) idx[at]={...idx[at], ...local};
     else idx.unshift(local);
-    idx.sort((a,b)=>(b.updated||0)-(a.updated||0));
   }
+  // Pinned maps first, then most-recently-updated.
+  idx.sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || (b.updated||0)-(a.updated||0));
   const list=$('#mapList'); list.innerHTML='';
   (idx||[]).forEach(m=>{
     const el=document.createElement('div');
-    el.className='map-item'+(map&&m.id===map.id?' active':'');
+    el.className='map-item'+(map&&m.id===map.id?' active':'')+(m.pinned?' pinned':'');
     el.innerHTML=`<span class="dot" style="background:${m.color||'#e0613a'}"></span><span class="nm">${escapeHtml(m.title||'Untitled')}</span><button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>`;
     el.style.cursor='pointer';
     el.onclick=()=>{ if(!map || map.id!==m.id) loadMap(m.id); };
@@ -3186,6 +3190,20 @@ async function refreshList(){
   });
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+// Pin/unpin a map so it stays at the top of the sidebar (works on any map, not
+// only the open one). Pin state lives on the map and is mirrored into the index.
+async function togglePin(id){
+  const target = (map && map.id===id) ? map : await Store.get(id);
+  if(!target){ toast('Could not open map'); return; }
+  const now = !target.pinned;
+  if(now) target.pinned = true; else delete target.pinned;
+  try{ await Store.save(target); }
+  catch(e){ toast('Could not update pin'); return; }
+  if(map && map.id===id){ if(now) map.pinned=true; else delete map.pinned; }
+  refreshList();
+  toast(now ? 'Pinned to top' : 'Unpinned');
+}
 
 /* ---------- Rich-text Notes editor popup ---------- */
 function showNotesEditor(nodeId){
