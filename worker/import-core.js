@@ -67,17 +67,26 @@ export function buildMapFromSpec(spec){
   for (const n of inNodes) {
     const node = { id: n.id, text: String(n.text), parent: n.id === rootId ? null : n.parent,
       x: 0, y: 0, side: n.id === rootId ? 'root' : null, color: (typeof n.color === 'string' && n.color) ? n.color : '#fff' };
-    if (typeof n.notes === 'string' && n.notes.trim()) node.notes = n.notes;
+    if (typeof n.notes === 'string' && n.notes.trim()) node.notes = n.notes;     // sticky note (rich HTML)
     if (n.collapsed === true) node.collapsed = true;
     if (n.tag != null && n.tag !== '') node.tag = String(n.tag);
+    // Bulleted/numbered list: multi-line text rendered as a list (selective use).
+    if (n.listType === 'ul' || n.listType === 'ol') { node.listType = n.listType; node.align = node.align || 'left'; }
+    if (n.bold === true) node.bold = true;
+    if (n.italic === true) node.italic = true;
+    if (n.highlight === true) node.highlight = true;
+    if (n.align === 'left' || n.align === 'center' || n.align === 'right') node.align = n.align;
+    // Checklist item: "done" or "todo".
+    if (n.task === 'done' || n.task === 'todo') node.task = n.task;
     if (n.citation && typeof n.citation === 'object') {
       const c = n.citation, cit = {};
       if (Array.isArray(c.authors) && c.authors.length) cit.authors = c.authors.join(', ');
       else if (typeof c.authors === 'string' && c.authors.trim()) cit.authors = c.authors.trim();
       if (c.year != null) cit.year = c.year;
       if (typeof c.title === 'string' && c.title.trim()) cit.title = c.title.trim();
+      if (typeof c.source === 'string' && c.source.trim()) cit.source = c.source.trim();   // journal / venue
       if (typeof c.doi === 'string' && c.doi.trim()) cit.doi = c.doi.trim();
-      else if (typeof c.arxiv === 'string' && c.arxiv.trim()) { cit.doi = 'arXiv:' + c.arxiv.trim(); cit.source = 'arXiv'; }
+      else if (typeof c.arxiv === 'string' && c.arxiv.trim()) { cit.doi = 'arXiv:' + c.arxiv.trim(); if(!cit.source) cit.source = 'arXiv'; }
       if (Object.keys(cit).length) { node.citation = cit; node.ref = true; }
     }
     nodes[n.id] = node;
