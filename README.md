@@ -6,6 +6,8 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 
 **▶ Try it live → [mindspark.githubpage.workers.dev](https://mindspark.githubpage.workers.dev/)** — runs entirely in your browser. Sign in with GitHub and your maps are saved as private JSON files in a `mindspark-maps` repo on your own account (no server in between).
 
+**🧠 Make maps by chatting → [MindSpark — Mind Map for Everyone](https://chatgpt.com/g/g-6a3a81242f748191ab1b7cff99a21619-mindspark-mind-map-for-everyone)** — describe a topic and the GPT builds the map, then hands you a link to open and edit it in MindSpark. No account needed to view.
+
 <p align="center">
   <img src="docs/screenshot.png" alt="MindSpark showing the “ML - Overview (Demo)” sample map: a “Machine Learning” central node branching into Supervised, Unsupervised and Reinforcement learning, Neural networks, a typical workflow, a learning checklist and references." width="900">
 </p>
@@ -20,6 +22,8 @@ An open-source, self-hostable **mind mapping app** with a database backend — i
 - **Math** — write `$...$` (inline) or `$$...$$` (display) LaTeX and it renders as native **MathML**; equations also render in PNG exports. Zero dependencies — covers the common inline subset (sub/superscripts, Greek, operators, `\frac`, `\sqrt`, accents, fonts, function names)
 - **Prompt building** — *Compile subtree → prompt*: assemble any branch into a prompt, substitute `{{variables}}`, see the token estimate, then copy or run it
 - **Version history** — browse, **diff** (added / removed / edited nodes), preview, and restore past versions
+- **Shareable links** — *Copy share link* encodes the entire map into a read-only URL; anyone can open it without an account, then save an editable copy into their own MindSpark
+- **AI map generation** — the companion [MindSpark GPT](https://chatgpt.com/g/g-6a3a81242f748191ab1b7cff99a21619-mindspark-mind-map-for-everyone) turns a prompt into a map and returns a link (see below)
 - **Rich text & nodes** — bold/italic/underline, lists, links, notes, images, citations, task progress
 - **Color themes** per node + per map, incl. **GitHub Light** and other light/dark themes
 - **Undo / redo** (full history) · **search & highlight** · **presentation mode**
@@ -38,6 +42,14 @@ Press **`Tab`** to add a child topic and **`Enter`** to add a sibling — the tr
   <img src="docs/create-map.gif" alt="Animation building the “ML - Overview (Demo)” map from a central “Machine Learning” idea outward into branches and sub-topics." width="820">
 </p>
 -->
+## Make maps with AI — the MindSpark GPT
+
+**[MindSpark — Mind Map for Everyone](https://chatgpt.com/g/g-6a3a81242f748191ab1b7cff99a21619-mindspark-mind-map-for-everyone)** is a Custom GPT that builds maps for you. Describe a topic, outline, or paste some notes — it generates a structured map (branches, bullets, sticky notes, checklists, citations) and returns a link.
+
+The link opens the map **read-only** in MindSpark (no account needed to view). Click **"Make an editable copy"** to save it into your own workspace — your repo, your token, nothing stored on anyone else's server.
+
+**How it works:** the GPT calls a small endpoint, `POST /api/import`, which turns the map spec into the same gzip-encoded `#view=` share link the *Copy share link* feature produces. No personal access token and no repo writes are involved, so it works for every user. The endpoint lives in the optional Cloudflare Worker under [`worker/`](worker/) — see `worker/README.md` to self-host it, along with the OpenAPI Action schema and map JSON schema for wiring up your own Custom GPT.
+
 ## Quick start
 
 Requires **Node.js ≥ 22** (for the built-in SQLite + HTTP — no packages to install).
@@ -112,7 +124,7 @@ The token is stored only in `localStorage` on the user's device. It's sent only 
 
 ### Why a PAT instead of "Sign in with GitHub"?
 
-A clean OAuth button would require a backend (a small Cloudflare Worker or Netlify Function) to handle the `client_secret` exchange. The PAT approach keeps the architecture **purely static** — zero servers, zero ops, zero ongoing cost. If you later want the polished one-click OAuth UX, add a tiny serverless function that swaps an OAuth code for a token; the rest of the code keeps working unchanged.
+A clean OAuth button would require a backend (a small Cloudflare Worker) to handle the `client_secret` exchange. The PAT approach keeps the core architecture **purely static** — zero servers, zero ops, zero ongoing cost. If you want the polished one-click *Sign in with GitHub* UX, this repo already includes that worker at [`worker/oauth-worker.js`](worker/) (the same one that powers the GPT map-import endpoint) — deploy it and set `GH_OAUTH` in `public/app.js`; everything else keeps working unchanged. See `worker/README.md`.
 
 ## Self-hosted deployment
 
@@ -185,6 +197,10 @@ mindspark/
 │   ├── index.html     # app shell
 │   ├── styles.css     # all styling
 │   └── app.js         # the full mind-map editor (vanilla JS)
+├── worker/            # optional Cloudflare Worker: GitHub OAuth + GPT map-import (/api/import)
+│   ├── oauth-worker.js
+│   ├── import-core.js # builds the #view= share link from a map spec
+│   └── wrangler.toml
 └── data/              # created at runtime — your SQLite database
 ```
 
