@@ -1,6 +1,6 @@
 # MindSpark
 
-An open-source, self-hostable **mind mapping app** with a database backend — inspired by GitMind, but with **no accounts, no paywalls, no feature gates, and no usage limits**. It's yours to run, modify, and extend.
+MindSpark is an open-source **mind-mapping app you actually own** — no accounts, no paywalls, no feature gates, no usage limits. Self-host it in one command, or run it free in the browser with every map saved to your *own* private GitHub repo, no server in between. It's vanilla JavaScript with **zero dependencies**, MIT-licensed, AI-assisted, and yours to run, modify, and extend.
 
 ![status](https://img.shields.io/badge/license-MIT-green) ![deps](https://img.shields.io/badge/dependencies-0-blue) ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
 
