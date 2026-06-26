@@ -4413,7 +4413,7 @@ $('#mapTitle').addEventListener('input',e=>{
 
 /* ---------- autosave ---------- */
 function scheduleSave(){
-  if(!map || READONLY)return;
+  if(!map || READONLY || map._ephemeral) return;   // live-session guest map is not persisted to a repo
   const target = map;          // bind THIS map: switching maps before the timer
   _pendingSaveMap = target;    // fires must NOT redirect the write onto another map
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
@@ -6906,11 +6906,19 @@ const Collab = (function(){
     }
     shadow=snap(); render();
     applying=false;
+    if(map && !map._ephemeral && !READONLY) scheduleSave();   // host persists collaborators' edits
   }
 
-  // Called from pushHistory() after every local edit.
+  // Called from pushHistory() AND after autoLayout(). Coalesced on a short timer
+  // so a pushHistory()+autoLayout() burst is diffed ONCE — capturing the final,
+  // aligned node positions rather than the pre-layout ones.
+  let opTimer=0;
   function onLocalChange(){
     if(!active||applying||!shadow||!map) return;
+    clearTimeout(opTimer); opTimer=setTimeout(flushOps, 60);
+  }
+  function flushOps(){
+    if(!active||!shadow||!map) return;
     const cur=snap(), ops=diff(shadow, cur);
     if(ops.length){
       send({t:'op', ops}); shadow=cur;
@@ -6955,11 +6963,19 @@ const Collab = (function(){
   return { startHost, join, stop, onLocalChange, reposition, isActive:()=>active };
 })();
 
+// autoLayout() repositions nodes without going through pushHistory(), so wrap it
+// to also notify the live session — coalesced, so it only sends real changes.
+if(typeof autoLayout==='function'){
+  const _autoLayout_orig = autoLayout;
+  autoLayout = function(){ const r=_autoLayout_orig.apply(this, arguments);
+    try{ if(typeof Collab!=='undefined') Collab.onLocalChange(); }catch(e){} return r; };
+}
+
 async function tryEnterLiveSession(){
   const m=(location.hash||'').match(/^#live=(.+)$/);
   if(!m) return false;
   const room=decodeURIComponent(m[1]);
-  map={ id:'live-'+room, title:'Live map', color:'#e0613a', rootId:null, nodes:{}, links:[], vars:{} };
+  map={ id:'live-'+room, title:'Live map', color:'#e0613a', rootId:null, nodes:{}, links:[], vars:{}, _ephemeral:true };
   sel=null; history=[]; hpos=-1;
   const t=$('#mapTitle'); if(t) t.value=map.title;
   render();
