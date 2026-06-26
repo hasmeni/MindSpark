@@ -6826,11 +6826,13 @@ const Collab = (function(){
     if(!layer){ layer=document.createElement('div'); layer.id='collabCursors'; document.body.appendChild(layer); }
     if(!pill){ pill=document.createElement('div'); pill.id='collabPill'; pill.style.display='none';
       pill.innerHTML='<span class="cp-dots"></span><span class="cp-txt"></span>'
+        +'<button class="cp-save" title="Save your own editable copy to your maps">Save a copy</button>'
         +'<button class="cp-link" title="Copy invite link">🔗</button>'
         +'<button class="cp-stop" title="Leave live session">✕</button>';
       document.body.appendChild(pill);
       pill.querySelector('.cp-stop').onclick=()=>stop(true);
       pill.querySelector('.cp-link').onclick=()=>{ copyLink(); toast('Invite link copied'); };
+      pill.querySelector('.cp-save').onclick=()=>saveCopy();
     }
   }
   function updatePill(){
@@ -6843,6 +6845,7 @@ const Collab = (function(){
     peers.forEach(p=>add(p.color, p.name||'Guest'));
     const n=peers.size+1;
     pill.querySelector('.cp-txt').textContent='Live · '+n+(n===1?' person':' people');
+    const sv=pill.querySelector('.cp-save'); if(sv) sv.style.display=(map&&map._ephemeral)?'':'none';   // only guests fork a copy
   }
 
   function startHost(){
@@ -6959,6 +6962,17 @@ const Collab = (function(){
   function loop(){ if(!active) return; reposition(); requestAnimationFrame(loop); }
   function removeCursor(id){ const p=peers.get(id); if(p&&p.el){ p.el.remove(); p.el=null; } }
   function clearCursors(){ peers.forEach(p=>{ if(p.el){ p.el.remove(); p.el=null; } }); if(layer) layer.innerHTML=''; }
+
+  // Guest forks the live map into their OWN repo. Reuses the shared-view import:
+  // stash the current map, leave the room, reload — consumePendingImport() (which
+  // runs after sign-in) creates and saves the editable copy.
+  function saveCopy(){
+    if(!map){ return; }
+    try{ sessionStorage.setItem('mindspark:pendingImport', JSON.stringify(_shareePayload(map))); }catch(e){}
+    stop(false);
+    toast('Opening your copy\u2026');
+    location.href = location.origin + location.pathname;
+  }
 
   return { startHost, join, stop, onLocalChange, reposition, isActive:()=>active };
 })();
