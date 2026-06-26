@@ -1309,3 +1309,18 @@
 
 /* Pinned maps: small badge before the title in the sidebar list. */
 .map-item.pinned .nm::before{ content:'\1F4CC'; margin-right:6px; font-size:.85em; opacity:.9; }
+
+/* Live collaboration: remote cursors + presence pill. */
+#collabCursors{ position:fixed; inset:0; pointer-events:none; z-index:60; overflow:hidden; }
+.collab-cursor{ position:absolute; top:0; left:0; will-change:transform; transition:transform .08s linear; }
+.collab-cursor svg{ display:block; filter:drop-shadow(0 1px 1px rgba(0,0,0,.3)); }
+.collab-cursor b{ position:absolute; left:15px; top:13px; font-size:11px; font-weight:600; color:#fff; padding:1px 6px; border-radius:8px; white-space:nowrap; }
+#collabPill{ position:fixed; bottom:18px; left:18px; z-index:70; display:flex; align-items:center; gap:8px;
+  background:var(--chrome); border:1px solid var(--chrome-edge); border-radius:999px; padding:5px 8px 5px 12px;
+  box-shadow:var(--shadow); font-size:12px; font-weight:500; }
+#collabPill .cp-dots{ display:flex; }
+#collabPill .cp-dot{ width:13px; height:13px; border-radius:50%; border:2px solid var(--chrome); margin-left:-5px; }
+#collabPill .cp-dot:first-child{ margin-left:0; }
+#collabPill .cp-txt{ color:var(--ink-soft); }
+#collabPill button{ border:none; background:transparent; cursor:pointer; font-size:12px; opacity:.7; padding:2px 5px; border-radius:6px; }
+#collabPill button:hover{ opacity:1; background:rgba(0,0,0,.06); }

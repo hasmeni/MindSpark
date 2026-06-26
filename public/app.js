@@ -1507,6 +1507,7 @@ function pushHistory(){
   hpos=history.length-1;
   updateUndo();
   scheduleSave();                              // any change to history persists
+  if(typeof Collab!=='undefined') Collab.onLocalChange();   // broadcast edits to live collaborators
 }
 function updateUndo(){ $('#undo').disabled=hpos<=0; $('#redo').disabled=hpos>=history.length-1; }
 function restore(s){ const o=JSON.parse(s); map.nodes=o.nodes; map.rootId=o.rootId; map.title=o.title; map.color=o.color; $('#mapTitle').value=map.title; autoLayout(); }
@@ -4459,6 +4460,7 @@ function exportMenu(){
   pop.className='export-pop';
   pop.innerHTML=`
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
+    <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
     <button data-a="buildprompt"><span class="ex-ic">✨</span><span><b>Compile subtree → prompt</b><i>Assemble the selected branch into a prompt</i></span></button>
@@ -4489,6 +4491,7 @@ function exportMenu(){
   pop.querySelectorAll('button').forEach(b=>b.onclick=()=>{
     const a=b.dataset.a; close();
     if(a==='share') copyShareLink();
+    if(a==='collab') Collab.startHost();
     else if(a==='history') showVersionHistory();
     else if(a==='present') startPresentation();
     else if(a==='buildprompt') showBuildPrompt(sel || (map&&map.rootId));
@@ -6806,6 +6809,7 @@ async function consumePendingImport(){
 (async()=>{
   // Read-only shared link? Decode and render a view-only map — no store, no
   // login, no account needed by the recipient.
+  if(await tryEnterLiveSession()) return;
   if(await tryEnterSharedView()) return;
   const {mode, loggedIn} = await initStore();
   if(mode==='cloud'){
@@ -6815,3 +6819,164 @@ async function consumePendingImport(){
     await proceedBoot();
   }
 })().catch(e=>{ console.error(e); if(!map) createMap(); });
+
+/* ============================================================================
+   Live collaboration — dependency-free op-broadcast (per-node last-write-wins).
+   Emits per-node ops on every local edit (via pushHistory) and applies remote
+   ops + presence cursors from the room's Durable Object. No Yjs, no deps.
+   ============================================================================ */
+const Collab = (function(){
+  let ws=null, me=null, room=null, active=false, applying=false, joiner=false, firstSnap=true;
+  let shadow=null, snapTimer=0, curThrottle=0;
+  const peers=new Map();                    // id -> {color,name,x,y,el}
+  let layer=null, pill=null;
+
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const snap  = () => ({ nodes:clone(map.nodes), rootId:map.rootId, title:map.title, color:map.color });
+  function wsUrl(r){ try{ const u=new URL(GH_OAUTH.workerUrl);
+    return (u.protocol==='https:'?'wss:':'ws:')+'//'+u.host+'/api/collab/'+encodeURIComponent(r); }catch(e){ return null; } }
+
+  function ensureUI(){
+    if(!layer){ layer=document.createElement('div'); layer.id='collabCursors'; document.body.appendChild(layer); }
+    if(!pill){ pill=document.createElement('div'); pill.id='collabPill'; pill.style.display='none';
+      pill.innerHTML='<span class="cp-dots"></span><span class="cp-txt"></span>'
+        +'<button class="cp-link" title="Copy invite link">🔗</button>'
+        +'<button class="cp-stop" title="Leave live session">✕</button>';
+      document.body.appendChild(pill);
+      pill.querySelector('.cp-stop').onclick=()=>stop(true);
+      pill.querySelector('.cp-link').onclick=()=>{ copyLink(); toast('Invite link copied'); };
+    }
+  }
+  function updatePill(){
+    ensureUI();
+    if(!active){ pill.style.display='none'; return; }
+    pill.style.display='flex';
+    const dots=pill.querySelector('.cp-dots'); dots.innerHTML='';
+    const add=(c,t)=>{ const d=document.createElement('i'); d.className='cp-dot'; d.style.background=c; d.title=t; dots.appendChild(d); };
+    add(me?me.color:'#999','You');
+    peers.forEach(p=>add(p.color, p.name||'Guest'));
+    const n=peers.size+1;
+    pill.querySelector('.cp-txt').textContent='Live · '+n+(n===1?' person':' people');
+  }
+
+  function startHost(){
+    if(!map||!map.id){ toast('Open a map first'); return; }
+    if(active){ copyLink(); toast('Invite link copied'); return; }
+    joiner=false; firstSnap=false; connect(map.id, true);
+  }
+  function join(roomId){ joiner=true; firstSnap=true; connect(roomId, false); }
+
+  function connect(roomId, asHost){
+    const url=wsUrl(roomId); if(!url){ toast('Live editing isn\u2019t configured'); return; }
+    room=roomId;
+    try{ ws=new WebSocket(url); }catch(e){ toast('Could not start live session'); return; }
+    ws.onopen=()=>{ active=true; shadow=snap();
+      if(asHost){ send({t:'snapshot', map:snap()}); copyLink(); toast('Live session started \u2014 link copied'); }
+      bindCursor(); updatePill(); loop();
+    };
+    ws.onmessage=ev=>onMessage(ev.data);
+    ws.onclose=()=>{ active=false; clearCursors(); updatePill(); };
+    ws.onerror=()=>{ toast('Live connection error'); };
+  }
+  function stop(notify){ if(ws){ try{ ws.close(); }catch(e){} } ws=null; active=false; room=null; peers.clear(); clearCursors(); updatePill(); if(notify) toast('Left live session'); }
+  function send(o){ if(ws&&ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
+  function link(){ return location.origin+location.pathname+'#live='+room; }
+  function copyLink(){ try{ navigator.clipboard.writeText(link()); }catch(e){} }
+
+  function onMessage(data){
+    let m; try{ m=JSON.parse(data); }catch(e){ return; }
+    switch(m.t){
+      case 'welcome':
+        me={id:m.id, color:m.color};
+        peers.clear(); (m.peers||[]).forEach(p=>peers.set(p.id,{color:p.color,name:p.name||''}));
+        if(joiner && m.snapshot) applySnapshot(m.snapshot);
+        updatePill(); break;
+      case 'join':  peers.set(m.id,{color:m.color,name:''}); updatePill(); break;
+      case 'leave': peers.delete(m.id); removeCursor(m.id); updatePill(); break;
+      case 'name':  { const p=peers.get(m.id); if(p){ p.name=m.name; updatePill(); } break; }
+      case 'cur':   moveCursor(m.from, m.x, m.y); break;
+      case 'op':    applyOps(m.ops); break;
+      case 'snapshot': if(joiner && firstSnap) applySnapshot(m.map); break;
+    }
+  }
+
+  function applySnapshot(s){
+    applying=true;
+    map.nodes=clone(s.nodes||{}); if(s.rootId) map.rootId=s.rootId;
+    if(s.title!=null){ map.title=s.title; const t=$('#mapTitle'); if(t) t.value=s.title; }
+    if(s.color) map.color=s.color;
+    shadow=snap();
+    if(typeof autoLayout==='function') autoLayout();
+    render();
+    if(firstSnap && typeof fit==='function'){ fit(); firstSnap=false; }
+    applying=false;
+  }
+  function applyOps(ops){
+    applying=true;
+    for(const op of ops){
+      if(op.t==='node') map.nodes[op.id]=op.n;
+      else if(op.t==='del'){ delete map.nodes[op.id]; if(sel===op.id) sel=null; }
+      else if(op.t==='meta'){ if(op.k==='title'){ map.title=op.v; const t=$('#mapTitle'); if(t) t.value=op.v; } else map[op.k]=op.v; }
+    }
+    shadow=snap(); render();
+    applying=false;
+  }
+
+  // Called from pushHistory() after every local edit.
+  function onLocalChange(){
+    if(!active||applying||!shadow||!map) return;
+    const cur=snap(), ops=diff(shadow, cur);
+    if(ops.length){
+      send({t:'op', ops}); shadow=cur;
+      clearTimeout(snapTimer); snapTimer=setTimeout(()=>{ if(active) send({t:'snapshot', map:snap()}); }, 1500);
+    }
+  }
+  function diff(prev, cur){
+    const ops=[];
+    for(const id in cur.nodes){ const a=prev.nodes[id], b=cur.nodes[id];
+      if(!a || JSON.stringify(a)!==JSON.stringify(b)) ops.push({t:'node', id, n:b}); }
+    for(const id in prev.nodes){ if(!cur.nodes[id]) ops.push({t:'del', id}); }
+    if(prev.title!==cur.title)  ops.push({t:'meta', k:'title',  v:cur.title});
+    if(prev.color!==cur.color)  ops.push({t:'meta', k:'color',  v:cur.color});
+    if(prev.rootId!==cur.rootId)ops.push({t:'meta', k:'rootId', v:cur.rootId});
+    return ops;
+  }
+
+  // ---- presence cursors ----
+  function bindCursor(){
+    const surf = (typeof stage!=='undefined' && stage) ? stage : document.body;
+    if(surf._collabBound) return; surf._collabBound=true;
+    surf.addEventListener('pointermove', e=>{
+      if(!active) return; const now=Date.now(); if(now-curThrottle<55) return; curThrottle=now;
+      send({t:'cur', x:(e.clientX-view.x)/view.k, y:(e.clientY-view.y)/view.k });
+    });
+  }
+  function moveCursor(id, wx, wy){
+    const p=peers.get(id); if(!p) return; p.x=wx; p.y=wy; ensureUI();
+    if(!p.el){ p.el=document.createElement('div'); p.el.className='collab-cursor';
+      p.el.innerHTML='<svg viewBox="0 0 16 16" width="18" height="18"><path d="M1 1 L1 13 L4.6 9.6 L7 14.5 L9.2 13.4 L6.8 8.6 L11.5 8.6 Z"/></svg><b></b>';
+      layer.appendChild(p.el); }
+    p.el.querySelector('path').setAttribute('fill', p.color);
+    const b=p.el.querySelector('b'); b.textContent=p.name||'Guest'; b.style.background=p.color;
+    place(p);
+  }
+  function place(p){ if(!p.el||p.x==null) return; p.el.style.transform='translate('+(p.x*view.k+view.x)+'px,'+(p.y*view.k+view.y)+'px)'; }
+  function reposition(){ peers.forEach(place); }
+  function loop(){ if(!active) return; reposition(); requestAnimationFrame(loop); }
+  function removeCursor(id){ const p=peers.get(id); if(p&&p.el){ p.el.remove(); p.el=null; } }
+  function clearCursors(){ peers.forEach(p=>{ if(p.el){ p.el.remove(); p.el=null; } }); if(layer) layer.innerHTML=''; }
+
+  return { startHost, join, stop, onLocalChange, reposition, isActive:()=>active };
+})();
+
+async function tryEnterLiveSession(){
+  const m=(location.hash||'').match(/^#live=(.+)$/);
+  if(!m) return false;
+  const room=decodeURIComponent(m[1]);
+  map={ id:'live-'+room, title:'Live map', color:'#e0613a', rootId:null, nodes:{}, links:[], vars:{} };
+  sel=null; history=[]; hpos=-1;
+  const t=$('#mapTitle'); if(t) t.value=map.title;
+  render();
+  Collab.join(room);
+  return true;
+}

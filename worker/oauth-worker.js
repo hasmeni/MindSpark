@@ -27,10 +27,19 @@
 // -----------------------------------------------------------------------------
 
 import { handleImport } from './import-core.js';
+export { CollabRoom } from './collab-do.js';
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // Live collaboration WebSocket: /api/collab/<roomId> -> the map's Durable Object.
+    if (url.pathname.startsWith('/api/collab/')) {
+      const room = decodeURIComponent(url.pathname.slice('/api/collab/'.length));
+      if (!room) return new Response('room required', { status: 400 });
+      const stub = env.COLLAB.get(env.COLLAB.idFromName(room));
+      return stub.fetch(request);
+    }
 
     // GPT map import (POST /api/import) — returns a read-only #view= share link.
     if (url.pathname === '/api/import' && request.method === 'POST') {

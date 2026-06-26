@@ -10,3 +10,13 @@ compatibility_date = "2024-09-01"
 # #view= share link, so NO GitHub PAT is needed:
 #   wrangler secret put IMPORT_TOKEN   # bearer secret the Custom GPT sends
 #   ALLOWED_ORIGIN = your MindSpark app URL (used to build the share link)
+
+# Live collaboration room (one Durable Object instance per map id).
+[[durable_objects.bindings]]
+name = "COLLAB"
+class_name = "CollabRoom"
+
+# SQLite-backed Durable Objects are available on the Workers Free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CollabRoom"]
