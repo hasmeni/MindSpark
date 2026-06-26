@@ -4144,6 +4144,7 @@ const TEMPLATE_CATEGORIES = [
 // Seed a new map from a template. Mirrors createMap()'s lifecycle but uses
 // the template's pre-built node graph instead of an empty root.
 async function createMapFromTemplate(templateId){
+  leaveLiveIfActive();
   const tpl = TEMPLATES[templateId];
   if(!tpl){ createMap(); return; }
   const id = uid();
@@ -4352,6 +4353,7 @@ function showTemplatesMenu(){
 }
 
 function createMap(){
+  leaveLiveIfActive();
   const id=uid(); const rid=uid();
   const rootText='Central Idea';
   const m={id,title:rootText,titleAuto:true,color:PALETTE[Math.floor(Math.random()*PALETTE.length)],rootId:rid,
@@ -4373,6 +4375,7 @@ function createMap(){
   setTimeout(()=>startEdit(rid),120);
 }
 async function loadMap(id){
+  leaveLiveIfActive();
   let m=null;
   try{ m=await Store.get(id); }catch(e){ toast('Could not load map'); return false; }
   if(!m){ toast('Map not found'); return false; }
@@ -6818,7 +6821,8 @@ const Collab = (function(){
   let layer=null, pill=null;
 
   const clone = o => JSON.parse(JSON.stringify(o));
-  const snap  = () => ({ nodes:clone(map.nodes), rootId:map.rootId, title:map.title, color:map.color });
+  const snap  = () => ({ nodes:clone(map.nodes), rootId:map.rootId, title:map.title, color:map.color,
+                         links:clone(map.links||[]), layout:map.layout, vars:clone(map.vars||{}), style:map.style });
   function wsUrl(r){ try{ const u=new URL(GH_OAUTH.workerUrl);
     return (u.protocol==='https:'?'wss:':'ws:')+'//'+u.host+'/api/collab/'+encodeURIComponent(r); }catch(e){ return null; } }
 
@@ -6881,7 +6885,7 @@ const Collab = (function(){
         if(joiner && m.snapshot) applySnapshot(m.snapshot);
         updatePill(); break;
       case 'join':  peers.set(m.id,{color:m.color,name:''}); updatePill(); break;
-      case 'leave': peers.delete(m.id); removeCursor(m.id); updatePill(); break;
+      case 'leave': removeCursor(m.id); peers.delete(m.id); updatePill(); break;
       case 'name':  { const p=peers.get(m.id); if(p){ p.name=m.name; updatePill(); } break; }
       case 'cur':   moveCursor(m.from, m.x, m.y); break;
       case 'op':    applyOps(m.ops); break;
@@ -6894,6 +6898,10 @@ const Collab = (function(){
     map.nodes=clone(s.nodes||{}); if(s.rootId) map.rootId=s.rootId;
     if(s.title!=null){ map.title=s.title; const t=$('#mapTitle'); if(t) t.value=s.title; }
     if(s.color) map.color=s.color;
+    if(s.links) map.links=clone(s.links);
+    if(s.layout) map.layout=s.layout;
+    if(s.vars)  map.vars=clone(s.vars);
+    if('style' in s) map.style=s.style;
     shadow=snap();
     if(typeof autoLayout==='function') autoLayout();
     render();
@@ -6936,6 +6944,10 @@ const Collab = (function(){
     if(prev.title!==cur.title)  ops.push({t:'meta', k:'title',  v:cur.title});
     if(prev.color!==cur.color)  ops.push({t:'meta', k:'color',  v:cur.color});
     if(prev.rootId!==cur.rootId)ops.push({t:'meta', k:'rootId', v:cur.rootId});
+    if(JSON.stringify(prev.links||[])!==JSON.stringify(cur.links||[])) ops.push({t:'meta', k:'links', v:cur.links});
+    if(prev.layout!==cur.layout) ops.push({t:'meta', k:'layout', v:cur.layout});
+    if(JSON.stringify(prev.vars||{})!==JSON.stringify(cur.vars||{})) ops.push({t:'meta', k:'vars', v:cur.vars});
+    if(JSON.stringify(prev.style)!==JSON.stringify(cur.style)) ops.push({t:'meta', k:'style', v:cur.style});
     return ops;
   }
 
@@ -6974,6 +6986,9 @@ const Collab = (function(){
     location.href = location.origin + location.pathname;
   }
 
+  // A closing/backgrounded tab closes the socket promptly so peers drop our cursor.
+  window.addEventListener('pagehide', ()=>{ try{ if(ws && ws.readyState===1) ws.close(); }catch(e){} });
+
   return { startHost, join, stop, onLocalChange, reposition, isActive:()=>active };
 })();
 
@@ -6983,6 +6998,10 @@ if(typeof autoLayout==='function'){
   const _autoLayout_orig = autoLayout;
   autoLayout = function(){ const r=_autoLayout_orig.apply(this, arguments);
     try{ if(typeof Collab!=='undefined') Collab.onLocalChange(); }catch(e){} return r; };
+}
+
+function leaveLiveIfActive(){
+  if(typeof Collab!=='undefined' && Collab.isActive()){ Collab.stop(false); toast('Left the live session'); }
 }
 
 async function tryEnterLiveSession(){

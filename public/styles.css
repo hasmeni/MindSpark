@@ -1322,7 +1322,7 @@
 #collabPill .cp-dot{ width:13px; height:13px; border-radius:50%; border:2px solid var(--chrome); margin-left:-5px; }
 #collabPill .cp-dot:first-child{ margin-left:0; }
 #collabPill .cp-txt{ color:var(--ink-soft); }
-#collabPill button{ border:none; background:transparent; cursor:pointer; font-size:12px; opacity:.7; padding:2px 5px; border-radius:6px; }
-#collabPill button:hover{ opacity:1; background:rgba(0,0,0,.06); }
+#collabPill button{ border:none; background:transparent; cursor:pointer; font-size:12px; opacity:.7; padding:2px 5px; border-radius:6px; color:var(--ink-soft); }
+#collabPill button:hover{ opacity:1; background:var(--hover, rgba(127,127,127,.18)); }
 #collabPill .cp-save{ opacity:1; font-weight:600; color:var(--accent); padding:3px 9px; border:1px solid var(--chrome-edge); border-radius:999px; }
 #collabPill .cp-save:hover{ background:var(--accent); color:#fff; border-color:var(--accent); }
