@@ -1502,7 +1502,7 @@ function relayoutDuringEdit(id){
    ============================================================ */
 function pushHistory(){
   history=history.slice(0,hpos+1);
-  history.push(JSON.stringify({nodes:map.nodes,rootId:map.rootId,title:map.title,color:map.color}));
+  history.push(JSON.stringify({nodes:map.nodes,rootId:map.rootId,title:map.title,color:map.color,links:map.links||[],layout:map.layout,vars:map.vars||{}}));
   if(history.length>60) history.shift();
   hpos=history.length-1;
   updateUndo();
@@ -1510,7 +1510,7 @@ function pushHistory(){
   if(typeof Collab!=='undefined') Collab.onLocalChange();   // broadcast edits to live collaborators
 }
 function updateUndo(){ $('#undo').disabled=hpos<=0; $('#redo').disabled=hpos>=history.length-1; }
-function restore(s){ const o=JSON.parse(s); map.nodes=o.nodes; map.rootId=o.rootId; map.title=o.title; map.color=o.color; $('#mapTitle').value=map.title; autoLayout(); }
+function restore(s){ const o=JSON.parse(s); map.nodes=o.nodes; map.rootId=o.rootId; map.title=o.title; map.color=o.color; if(o.links) map.links=o.links; if(o.layout) map.layout=o.layout; if(o.vars) map.vars=o.vars; $('#mapTitle').value=map.title; autoLayout(); }
 function undo(){ if(hpos>0){hpos--;restore(history[hpos]);updateUndo();} }
 function redo(){ if(hpos<history.length-1){hpos++;restore(history[hpos]);updateUndo();} }
 
@@ -4144,7 +4144,7 @@ const TEMPLATE_CATEGORIES = [
 // Seed a new map from a template. Mirrors createMap()'s lifecycle but uses
 // the template's pre-built node graph instead of an empty root.
 async function createMapFromTemplate(templateId){
-  leaveLiveIfActive();
+  if(!leaveLiveForSwitch()) return;
   const tpl = TEMPLATES[templateId];
   if(!tpl){ createMap(); return; }
   const id = uid();
@@ -4353,7 +4353,7 @@ function showTemplatesMenu(){
 }
 
 function createMap(){
-  leaveLiveIfActive();
+  if(!leaveLiveForSwitch()) return;
   const id=uid(); const rid=uid();
   const rootText='Central Idea';
   const m={id,title:rootText,titleAuto:true,color:PALETTE[Math.floor(Math.random()*PALETTE.length)],rootId:rid,
@@ -4375,7 +4375,7 @@ function createMap(){
   setTimeout(()=>startEdit(rid),120);
 }
 async function loadMap(id){
-  leaveLiveIfActive();
+  if(!leaveLiveForSwitch()) return;
   let m=null;
   try{ m=await Store.get(id); }catch(e){ toast('Could not load map'); return false; }
   if(!m){ toast('Map not found'); return false; }
@@ -4462,12 +4462,14 @@ function exportMenu(){
   const pop=document.createElement('div');
   pop.className='export-pop';
   pop.innerHTML=`
+    <div class="ex-grp">Share &amp; collaborate</div>
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
     <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
+    <div class="ex-grp">Tools</div>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
     <button data-a="buildprompt"><span class="ex-ic">✨</span><span><b>Compile subtree → prompt</b><i>Assemble the selected branch into a prompt</i></span></button>
-    <div class="ex-div"></div>
+    <div class="ex-grp">Export</div>
     <button data-a="png"   ><span class="ex-ic">🖼</span><span><b>PNG image</b><i>Themed export, honors map style</i></span></button>
     <button data-a="prompt"><span class="ex-ic">⚡</span><span><b>Export as prompt</b><i>Fill variables, then copy clean text</i></span></button>
     <button data-a="md"    ><span class="ex-ic">📋</span><span><b>Markdown / text</b><i>Indented bullets — paste anywhere</i></span></button>
@@ -4475,11 +4477,11 @@ function exportMenu(){
     <button data-a="word"  ><span class="ex-ic">📄</span><span><b>Word document (.doc)</b><i>Opens in Word, Google Docs, LibreOffice</i></span></button>
     <button data-a="mermaid"><span class="ex-ic">🧜</span><span><b>Mermaid diagram</b><i>Renders in GitHub, Notion, Obsidian</i></span></button>
     <button data-a="refs"><span class="ex-ic">📖</span><span><b>References list</b><i>All citation nodes, formatted</i></span></button>
-    <div class="ex-div"></div>
+    <div class="ex-grp">Manage</div>
     <button data-a="duplicate"><span class="ex-ic">⎘</span><span><b>Duplicate this map</b><i>Make an editable copy</i></span></button>
     <button data-a="astemplate"><span class="ex-ic">⭐</span><span><b>Save as template</b><i>Reuse this structure for new maps</i></span></button>
     <button data-a="json"  ><span class="ex-ic">{}</span><span><b>JSON file</b><i>Full backup, re-importable</i></span></button>
-    <div class="ex-div"></div>
+    <div class="ex-grp">Import</div>
     <button data-a="import"><span class="ex-ic">↑</span><span><b>Import file</b><i>JSON, OPML, or Markdown outline</i></span></button>`;
   const r=$('#menuExport').getBoundingClientRect();
   pop.style.position='fixed';
@@ -6816,7 +6818,7 @@ async function consumePendingImport(){
    ============================================================================ */
 const Collab = (function(){
   let ws=null, me=null, room=null, active=false, applying=false, joiner=false, firstSnap=true;
-  let shadow=null, snapTimer=0, curThrottle=0;
+  let shadow=null, snapTimer=0, curThrottle=0, pingTimer=0, reapTimer=0;
   const peers=new Map();                    // id -> {color,name,x,y,el}
   let layer=null, pill=null;
 
@@ -6866,25 +6868,29 @@ const Collab = (function(){
     ws.onopen=()=>{ active=true; shadow=snap();
       if(asHost){ send({t:'snapshot', map:snap()}); copyLink(); toast('Live session started \u2014 link copied'); }
       bindCursor(); updatePill(); loop();
+      pingTimer=setInterval(()=>send({t:'ping'}), 6000);   // heartbeat so peers know we\u2019re alive
+      reapTimer=setInterval(reapStale, 5000);              // drop cursors of peers gone silent (network drop)
     };
     ws.onmessage=ev=>onMessage(ev.data);
     ws.onclose=()=>{ active=false; clearCursors(); updatePill(); };
     ws.onerror=()=>{ toast('Live connection error'); };
   }
-  function stop(notify){ if(ws){ try{ ws.close(); }catch(e){} } ws=null; active=false; room=null; peers.clear(); clearCursors(); updatePill(); if(notify) toast('Left live session'); }
+  function stop(notify){ clearInterval(pingTimer); clearInterval(reapTimer); if(ws){ try{ ws.close(); }catch(e){} } ws=null; active=false; room=null; peers.clear(); clearCursors(); updatePill(); if(notify) toast('Left live session'); }
   function send(o){ if(ws&&ws.readyState===1){ try{ ws.send(JSON.stringify(o)); }catch(e){} } }
   function link(){ return location.origin+location.pathname+'#live='+room; }
   function copyLink(){ try{ navigator.clipboard.writeText(link()); }catch(e){} }
 
   function onMessage(data){
     let m; try{ m=JSON.parse(data); }catch(e){ return; }
+    if(m.from){ const pr=peers.get(m.from); if(pr) pr.lastSeen=Date.now(); }   // liveness
     switch(m.t){
       case 'welcome':
         me={id:m.id, color:m.color};
-        peers.clear(); (m.peers||[]).forEach(p=>peers.set(p.id,{color:p.color,name:p.name||''}));
+        peers.clear(); (m.peers||[]).forEach(p=>peers.set(p.id,{color:p.color,name:p.name||'',lastSeen:Date.now()}));
         if(joiner && m.snapshot) applySnapshot(m.snapshot);
         updatePill(); break;
-      case 'join':  peers.set(m.id,{color:m.color,name:''}); updatePill(); break;
+      case 'ping': break;   // heartbeat only (lastSeen already refreshed above)
+      case 'join':  peers.set(m.id,{color:m.color,name:'',lastSeen:Date.now()}); updatePill(); break;
       case 'leave': removeCursor(m.id); peers.delete(m.id); updatePill(); break;
       case 'name':  { const p=peers.get(m.id); if(p){ p.name=m.name; updatePill(); } break; }
       case 'cur':   moveCursor(m.from, m.x, m.y); break;
@@ -6906,6 +6912,7 @@ const Collab = (function(){
     if(typeof autoLayout==='function') autoLayout();
     render();
     if(firstSnap && typeof fit==='function'){ fit(); firstSnap=false; }
+    pushHistory();                 // baseline snapshot so a guest can undo their first edit
     applying=false;
   }
   function applyOps(ops){
@@ -6974,6 +6981,9 @@ const Collab = (function(){
   function loop(){ if(!active) return; reposition(); requestAnimationFrame(loop); }
   function removeCursor(id){ const p=peers.get(id); if(p&&p.el){ p.el.remove(); p.el=null; } }
   function clearCursors(){ peers.forEach(p=>{ if(p.el){ p.el.remove(); p.el=null; } }); if(layer) layer.innerHTML=''; }
+  function reapStale(){ const now=Date.now(); let changed=false;
+    peers.forEach((pr,id)=>{ if(now-(pr.lastSeen||now) > 18000){ removeCursor(id); peers.delete(id); changed=true; } });
+    if(changed) updatePill(); }
 
   // Guest forks the live map into their OWN repo. Reuses the shared-view import:
   // stash the current map, leave the room, reload — consumePendingImport() (which
@@ -7000,8 +7010,19 @@ if(typeof autoLayout==='function'){
     try{ if(typeof Collab!=='undefined') Collab.onLocalChange(); }catch(e){} return r; };
 }
 
-function leaveLiveIfActive(){
-  if(typeof Collab!=='undefined' && Collab.isActive()){ Collab.stop(false); toast('Left the live session'); }
+function leaveLiveForSwitch(){
+  // Returns true if the caller may switch maps, false to abort.
+  if(typeof Collab==='undefined' || !Collab.isActive()) return true;
+  if(map && map._ephemeral){
+    // Guest leaving the live view: re-boot the app (login overlay, or their own maps).
+    Collab.stop(false);
+    location.href = location.origin + location.pathname;   // drops #live
+    return false;
+  }
+  // Host: confirm before disconnecting collaborators.
+  if(!confirm('Leave the live session? Your collaborators will be disconnected from this map.')) return false;
+  Collab.stop(false); toast('Left the live session');
+  return true;
 }
 
 async function tryEnterLiveSession(){
