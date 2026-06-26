@@ -6806,20 +6806,6 @@ async function consumePendingImport(){
   return true;
 }
 
-(async()=>{
-  // Read-only shared link? Decode and render a view-only map — no store, no
-  // login, no account needed by the recipient.
-  if(await tryEnterLiveSession()) return;
-  if(await tryEnterSharedView()) return;
-  const {mode, loggedIn} = await initStore();
-  if(mode==='cloud'){
-    if(loggedIn){ showUserPill(); await proceedBoot(); }
-    else { showLoginOverlay(); }
-  } else {
-    await proceedBoot();
-  }
-})().catch(e=>{ console.error(e); if(!map) createMap(); });
-
 /* ============================================================================
    Live collaboration — dependency-free op-broadcast (per-node last-write-wins).
    Emits per-node ops on every local edit (via pushHistory) and applies remote
@@ -6980,3 +6966,17 @@ async function tryEnterLiveSession(){
   Collab.join(room);
   return true;
 }
+
+(async()=>{
+  // Read-only shared link? Decode and render a view-only map — no store, no
+  // login, no account needed by the recipient.
+  if(await tryEnterLiveSession()) return;
+  if(await tryEnterSharedView()) return;
+  const {mode, loggedIn} = await initStore();
+  if(mode==='cloud'){
+    if(loggedIn){ showUserPill(); await proceedBoot(); }
+    else { showLoginOverlay(); }
+  } else {
+    await proceedBoot();
+  }
+})().catch(e=>{ console.error(e); if(!map) createMap(); });
