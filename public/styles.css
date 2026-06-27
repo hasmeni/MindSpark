@@ -1184,7 +1184,7 @@
      stage fills the full width (otherwise it auto-places into the 0-width track
      and the canvas clips to nothing). */
   body.shared-view .app{ grid-template-columns:1fr; }
-  body.shared-view .stage{ top:42px; }          /* clear the banner */
+  body.shared-view .stage{ top:var(--shared-banner-h, 42px); }   /* clear the banner */
   body.shared-view .topbar{ top:50px; }
   body.shared-view .breadcrumb{ top:96px; }
   body.shared-view #mapTitle{ pointer-events:none; max-width:none; }
@@ -1337,4 +1337,6 @@
 .map-item .shared-badge{ font-size:11px; opacity:.7; flex:0 0 auto; margin-right:2px; }
 
 /* Cloud-edit keeps the editing toolbar visible, so push it clear of the shared banner. */
-body.cloud-edit .topbar{ top:54px; }
+/* Cloud-edit shows the sidebar AND toolbar, so shift the whole app below the fixed
+   shared banner (measured into --shared-banner-h so it adapts when the banner wraps). */
+body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }

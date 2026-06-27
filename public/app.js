@@ -6813,6 +6813,7 @@ function showSharedBanner(){
     <button class="sb-copy" id="sbCopy">Make an editable copy</button>
     <a class="sb-brand" href="${location.origin+location.pathname}" title="Open MindSpark">MindSpark</a>`;
   document.body.appendChild(b);
+  _setBannerHeightVar(b);
   b.addEventListener('mousedown',e=>e.stopPropagation());
   $('#sbCopy').onclick=()=>{
     try{ sessionStorage.setItem('mindspark:pendingImport', JSON.stringify(_shareePayload(map))); }catch(e){}
@@ -7182,12 +7183,20 @@ async function cloudPollOnce(id){
   _cloudPollSig=sig;
 }
 window.addEventListener('pagehide', stopCloudPoll);
+// Measure the shared banner's real height into a CSS var so the app/canvas offset
+// adapts when the text wraps (e.g. narrow screens) instead of guessing a fixed px.
+function _setBannerHeightVar(b){
+  requestAnimationFrame(()=>{ try{ const h=Math.ceil(b.getBoundingClientRect().height);
+    if(h>0) document.documentElement.style.setProperty('--shared-banner-h', h+'px'); }catch(e){} });
+}
+window.addEventListener('resize', ()=>{ const b=document.getElementById('cloudEditBanner')||document.getElementById('sharedBanner'); if(b) _setBannerHeightVar(b); });
 function showCloudEditBanner(){
   if($('#cloudEditBanner')) return;
   const b=document.createElement('div'); b.id='cloudEditBanner'; b.className='shared-banner';
   b.innerHTML='<span class="sb-eye">\u270F\uFE0F</span>'
     +'<span class="sb-text">You\u2019re editing a <b>shared</b> map \u2014 changes save for everyone with the link</span>';
   document.body.appendChild(b);
+  _setBannerHeightVar(b);
 }
 // On boot: #shared=<id> loads the stored map from the cloud, read-only, no session.
 async function tryEnterSharedMap(){
