@@ -4465,6 +4465,7 @@ function exportMenu(){
     <div class="ex-grp">Share &amp; collaborate</div>
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
     <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
+    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share link</b><i>Short link, served from the cloud (beta)</i></span></button>
     <div class="ex-grp">Tools</div>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
@@ -4497,6 +4498,7 @@ function exportMenu(){
     const a=b.dataset.a; close();
     if(a==='share') copyShareLink();
     if(a==='collab') Collab.startHost();
+    if(a==='cloudshare') publishSharedMap();
     else if(a==='history') showVersionHistory();
     else if(a==='present') startPresentation();
     else if(a==='buildprompt') showBuildPrompt(sel || (map&&map.rootId));
@@ -7025,6 +7027,49 @@ function leaveLiveForSwitch(){
   return true;
 }
 
+// ---- Cloud-hosted shared map (async, persists in the Durable Object) ----
+function sharedApiUrl(id){
+  try{ const u=new URL(GH_OAUTH.workerUrl); return u.origin+'/api/collab/'+encodeURIComponent(id); }
+  catch(e){ return null; }
+}
+// Publish the current map to the cloud store; returns a short #shared=<id> link.
+async function publishSharedMap(){
+  if(!map || !map.id){ toast('Open a map first'); return; }
+  const url=sharedApiUrl(map.id); if(!url){ toast('Cloud sharing isn\u2019t configured'); return; }
+  try{
+    const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_shareePayload(map)) });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const link=location.origin+location.pathname+'#shared='+map.id;
+    try{ await navigator.clipboard.writeText(link); }catch(e){}
+    toast('Cloud share link copied');
+  }catch(e){ toast('Could not publish: '+(e.message||e)); }
+}
+// On boot: #shared=<id> loads the stored map from the cloud, read-only, no session.
+async function tryEnterSharedMap(){
+  const mt=(location.hash||'').match(/^#shared=(.+)$/);
+  if(!mt) return false;
+  const id=decodeURIComponent(mt[1]);
+  const url=sharedApiUrl(id); if(!url) return false;
+  let data;
+  try{ const r=await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status); data=await r.json(); }
+  catch(e){ console.error('shared map load failed', e); return false; }
+  READONLY=true;
+  document.body.classList.add('shared-view');
+  map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
+        style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
+        nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
+  sel=null;
+  $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
+  $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
+  render();
+  showSharedBanner();
+  let tries=0;
+  const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); } else if(tries++<60){ requestAnimationFrame(settle); } };
+  requestAnimationFrame(settle);
+  window.addEventListener('load', ()=>{ autoLayout(); fit(); }, { once:true });
+  return true;
+}
+
 async function tryEnterLiveSession(){
   const m=(location.hash||'').match(/^#live=(.+)$/);
   if(!m) return false;
@@ -7041,6 +7086,7 @@ async function tryEnterLiveSession(){
   // Read-only shared link? Decode and render a view-only map — no store, no
   // login, no account needed by the recipient.
   if(await tryEnterLiveSession()) return;
+  if(await tryEnterSharedMap()) return;
   if(await tryEnterSharedView()) return;
   const {mode, loggedIn} = await initStore();
   if(mode==='cloud'){

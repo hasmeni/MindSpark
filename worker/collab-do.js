@@ -9,8 +9,7 @@ const COLORS = ['#e0613a','#3a6ea5','#2e9e6b','#9a5bb8','#d0902e','#c14d7a','#1f
 
 export class CollabRoom extends DurableObject {
   async fetch(request){
-    if (request.headers.get('Upgrade') !== 'websocket')
-      return new Response('expected websocket', { status: 426 });
+    if (request.headers.get('Upgrade') !== 'websocket') return this._http(request);
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);                       // hibernatable
 
@@ -24,6 +23,27 @@ export class CollabRoom extends DurableObject {
     server.send(JSON.stringify({ t:'welcome', id, color, snapshot: snapshot||null, peers: this._peers(server) }));
     this._broadcast(server, { t:'join', id, color });
     return new Response(null, { status:101, webSocket: client });
+  }
+
+  // Durable shared-map HTTP API (no session needed): GET loads the stored map,
+  // PUT publishes/updates it. This promotes the in-storage snapshot to a
+  // persistent source of truth a collaborator can open any time.
+  async _http(request){
+    const origin = (this.env && this.env.ALLOWED_ORIGIN) || '*';
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+    const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    if (request.method === 'GET'){
+      const snap = await this.ctx.storage.get('snapshot');
+      return snap ? json(200, snap) : json(404, { error: 'not found' });
+    }
+    if (request.method === 'PUT'){
+      let m; try{ m = await request.json(); }catch(e){ return json(400, { error: 'bad json' }); }
+      if (!m || typeof m !== 'object') return json(400, { error: 'map object required' });
+      await this.ctx.storage.put('snapshot', m);
+      return json(200, { ok: true });
+    }
+    return json(405, { error: 'method not allowed' });
   }
 
   async webSocketMessage(ws, message){
