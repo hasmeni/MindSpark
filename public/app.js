@@ -3170,8 +3170,9 @@ async function refreshList(){
   let idx=[];
   try{ idx=await Store.list(); }catch(e){ idx=[]; }
   // Merge the current in-memory map so title edits / new maps appear immediately
-  // (don't wait for the debounced save to hit the database).
-  if(map){
+  // (don't wait for the debounced save to hit the database). Shared maps (_cloudView)
+  // are NOT owned — they belong in "Shared with me", never in "Your maps".
+  if(map && !map._cloudView){
     const local={id:map.id, title:map.title, color:map.color, updated:map.updated||Date.now(), pinned:map.pinned||undefined};
     const at=idx.findIndex(m=>m.id===map.id);
     if(at>=0) idx[at]={...idx[at], ...local};
@@ -3203,7 +3204,7 @@ async function refreshList(){
         '<span class="shared-badge" title="'+(sm.token?'Editable':'View only')+'">'+(sm.token?'\u270F\uFE0F':'\uD83D\uDC41')+'</span>'+
         '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
       el.style.cursor='pointer';
-      el.onclick=()=>openSharedFromLibrary(sm);
+      el.onclick=()=>{ if(!(map && map.id==='shared-'+sm.id)) openSharedFromLibrary(sm); };
       el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedRowMenu(ev.currentTarget, sm); };
       list.appendChild(el);
     });
@@ -4373,6 +4374,7 @@ function showTemplatesMenu(){
 
 function createMap(){
   if(!leaveLiveForSwitch()) return;
+  exitSharedMode();
   const id=uid(); const rid=uid();
   const rootText='Central Idea';
   const m={id,title:rootText,titleAuto:true,color:PALETTE[Math.floor(Math.random()*PALETTE.length)],rootId:rid,
@@ -4395,6 +4397,7 @@ function createMap(){
 }
 async function loadMap(id){
   if(!leaveLiveForSwitch()) return;
+  exitSharedMode();            // if we were viewing a shared map, leave it cleanly
   let m=null;
   try{ m=await Store.get(id); }catch(e){ toast('Could not load map'); return false; }
   if(!m){ toast('Map not found'); return false; }
@@ -7070,10 +7073,7 @@ function rememberSharedMap(entry){
   _saveSharedStore(a);
 }
 function forgetSharedMap(id){ _saveSharedStore(_sharedStore().filter(x=>x.id!==id)); refreshList(); toast('Removed from list'); }
-function openSharedFromLibrary(sm){
-  const hash='#shared='+sm.id+(sm.token?(':'+sm.token):'');
-  location.hash=hash; location.reload();
-}
+function openSharedFromLibrary(sm){ openSharedInPlace(sm.id, sm.token); }
 function openSharedRowMenu(btn, sm){
   if(_rowPop && _rowPop._for==='sh:'+sm.id){ closeRowMenu(); return; }
   if(typeof closeAllMenus==='function') closeAllMenus();
@@ -7139,29 +7139,43 @@ function adoptCloudMerged(merged){
   render();
 }
 let _cloudSaveTimer=0, _cloudPollTimer=0, _cloudPollSig='';
+// Perform the cloud save (diff -> PATCH -> adopt merged). Separated so a map switch
+// can flush a pending save immediately.
+async function _doCloudSave(ce){
+  const url=sharedApiUrl(ce.id);
+  if(!url){ $('#saveText').textContent='Save failed'; return; }
+  const cur=_shareePayload(map);
+  const ops=cloudDiff(map._cloudBase||cur, cur);
+  if(!ops.length){ $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; return; }
+  try{
+    const r=await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const res=await r.json().catch(()=>null);
+    if(res && res.map) adoptCloudMerged(res.map);
+    map._cloudBase=_cloneObj(_shareePayload(map));   // base = what's now on the server
+    _cloudPollSig = JSON.stringify(res && res.map ? res.map : _shareePayload(map));
+    $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
+  }catch(e){
+    $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
+    toast('Couldn\u2019t save shared map: '+(e.message||e));
+  }
+}
 function scheduleCloudSave(){
   const ce=map._cloudEdit; if(!ce) return;
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
   clearTimeout(_cloudSaveTimer);
-  _cloudSaveTimer=setTimeout(async()=>{
-    _cloudSaveTimer=0; const url=sharedApiUrl(ce.id);
-    if(!url){ $('#saveText').textContent='Save failed'; return; }
-    const cur=_shareePayload(map);
-    const ops=cloudDiff(map._cloudBase||cur, cur);
-    if(!ops.length){ $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; return; }
-    try{
-      const r=await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) });
-      if(!r.ok) throw new Error('HTTP '+r.status);
-      const res=await r.json().catch(()=>null);
-      if(res && res.map) adoptCloudMerged(res.map);
-      map._cloudBase=_cloneObj(_shareePayload(map));   // base = what's now on the server
-      _cloudPollSig = JSON.stringify(res && res.map ? res.map : _shareePayload(map));
-      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
-    }catch(e){
-      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
-      toast('Couldn\u2019t save shared map: '+(e.message||e));
-    }
-  }, 1200);
+  _cloudSaveTimer=setTimeout(()=>{ _cloudSaveTimer=0; _doCloudSave(ce); }, 1200);
+}
+// Fire any pending cloud edit immediately (used when leaving a shared map): send the
+// diff without adopting back, since we're switching away from this map.
+function flushCloudSave(){
+  if(!_cloudSaveTimer) return;
+  clearTimeout(_cloudSaveTimer); _cloudSaveTimer=0;
+  const ce=map && map._cloudEdit; if(!ce) return;
+  const url=sharedApiUrl(ce.id); if(!url) return;
+  const ops=cloudDiff(map._cloudBase||_shareePayload(map), _shareePayload(map));
+  if(!ops.length) return;
+  try{ fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) }).catch(()=>{}); }catch(e){}
 }
 // Lightweight polling so shared maps reflect others' edits without a live session.
 function startCloudPoll(id){ stopCloudPoll(); _cloudPollTimer=setInterval(()=>cloudPollOnce(id), 5000); }
@@ -7198,18 +7212,17 @@ function showCloudEditBanner(){
   document.body.appendChild(b);
   _setBannerHeightVar(b);
 }
-// On boot: #shared=<id> loads the stored map from the cloud, read-only, no session.
-async function tryEnterSharedMap(){
-  const mt=(location.hash||'').match(/^#shared=([^:]+)(?::(.+))?$/);
-  if(!mt) return false;
-  const id=decodeURIComponent(mt[1]);
-  const token=mt[2]?decodeURIComponent(mt[2]):null;
-  const url=sharedApiUrl(id); if(!url) return false;
-  let data;
-  try{ const r=await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status); data=await r.json(); }
-  catch(e){ console.error('shared map load failed', e); return false; }
+// ---- Shared-map core (used by direct-link boot AND in-place open from the sidebar) ----
+async function _fetchSharedMap(id){
+  const url=sharedApiUrl(id); if(!url) return null;
+  try{ const r=await fetch(url); if(!r.ok) return null; return await r.json(); }
+  catch(e){ console.error('shared map load failed', e); return null; }
+}
+// Apply a fetched shared snapshot into the live editor (banner, poll, read-only state).
+function _applySharedMap(id, token, data){
   const editable=!!token;
   READONLY=!editable;
+  document.body.classList.remove('cloud-edit','shared-view');
   document.body.classList.add(editable?'cloud-edit':'shared-view');
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
@@ -7220,9 +7233,7 @@ async function tryEnterSharedMap(){
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=!editable;
   $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
-  // Snapshot the merge base AFTER render so layout-assigned node coords are baked in
-  // — otherwise the poll mistakes layout for unsaved edits and never adopts changes.
-  if(editable) map._cloudBase=_cloneObj(_shareePayload(map));
+  if(editable) map._cloudBase=_cloneObj(_shareePayload(map));   // base AFTER render (coords baked in)
   if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
   rememberSharedMap({ id, token, title: map.title, color: map.color });
   _cloudPollSig = JSON.stringify(data);
@@ -7231,7 +7242,47 @@ async function tryEnterSharedMap(){
   const rebase=()=>{ if(editable) map._cloudBase=_cloneObj(_shareePayload(map)); };
   const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); rebase(); } else if(tries++<60){ requestAnimationFrame(settle); } };
   requestAnimationFrame(settle);
-  window.addEventListener('load', ()=>{ autoLayout(); fit(); rebase(); }, { once:true });
+}
+// Leave shared mode WITHOUT a reload: flush a pending save, stop polling, drop the
+// banner/read-only state, and clear #shared= from the URL so you can switch straight
+// back to "Your maps" in the same session (no browser back button needed).
+function exitSharedMode(){
+  flushCloudSave();
+  stopCloudPoll();
+  const ce=document.getElementById('cloudEditBanner'); if(ce) ce.remove();
+  const sb=document.getElementById('sharedBanner'); if(sb) sb.remove();
+  document.body.classList.remove('cloud-edit','shared-view');
+  READONLY=false;
+  const t=$('#mapTitle'); if(t) t.readOnly=false;
+  _cloudPollSig='';
+  if((location.hash||'').indexOf('#shared=')===0){
+    try{ window.history.replaceState(null,'', location.origin+location.pathname+location.search); }catch(e){}
+  }
+}
+// Open a shared map IN-PLACE from the sidebar — keeps "Your maps" + "Shared with me"
+// visible and switchable, the way Overleaf keeps owned and shared projects in one list.
+async function openSharedInPlace(id, token){
+  if(typeof leaveLiveForSwitch==='function' && !leaveLiveForSwitch()) return false;
+  flushPendingSave();          // persist the outgoing map
+  exitSharedMode();            // clear any previous shared banner/poll
+  const data=await _fetchSharedMap(id);
+  if(!data){ toast('Couldn\u2019t open the shared map'); return false; }
+  _applySharedMap(id, token, data);
+  refreshList();               // keep the sidebar populated + highlight the shared row
+  try{ window.history.replaceState(null,'', location.origin+location.pathname+'#shared='+id+(token?(':'+token):'')); }catch(e){}
+  return true;
+}
+// On boot: a direct #shared=<id> link opened by someone NOT signed in (external
+// recipient) — standalone read-only / edit view, no account needed.
+async function tryEnterSharedMap(){
+  const mt=(location.hash||'').match(/^#shared=([^:]+)(?::(.+))?$/);
+  if(!mt) return false;
+  const id=decodeURIComponent(mt[1]);
+  const token=mt[2]?decodeURIComponent(mt[2]):null;
+  const data=await _fetchSharedMap(id);
+  if(!data) return false;
+  _applySharedMap(id, token, data);
+  window.addEventListener('load', ()=>{ autoLayout(); fit(); if(token) map._cloudBase=_cloneObj(_shareePayload(map)); }, { once:true });
   return true;
 }
 
@@ -7251,13 +7302,18 @@ async function tryEnterLiveSession(){
   // Read-only shared link? Decode and render a view-only map — no store, no
   // login, no account needed by the recipient.
   if(await tryEnterLiveSession()) return;
-  if(await tryEnterSharedMap()) return;
   if(await tryEnterSharedView()) return;
+  // A #shared= link: if you're signed in, boot your app first (so "Your maps" + the
+  // "Shared with me" library are loaded) and open the shared map IN-PLACE. If you're
+  // an external recipient (not signed in), fall back to the standalone shared view.
+  const _sh=(location.hash||'').match(/^#shared=([^:]+)(?::(.+))?$/);
+  const _openSharedAfterBoot=async()=>{ if(_sh) await openSharedInPlace(decodeURIComponent(_sh[1]), _sh[2]?decodeURIComponent(_sh[2]):null); };
   const {mode, loggedIn} = await initStore();
   if(mode==='cloud'){
-    if(loggedIn){ showUserPill(); await proceedBoot(); }
+    if(loggedIn){ showUserPill(); await proceedBoot(); await _openSharedAfterBoot(); }
+    else if(_sh){ await tryEnterSharedMap(); }   // external recipient: standalone view
     else { showLoginOverlay(); }
   } else {
-    await proceedBoot();
+    await proceedBoot(); await _openSharedAfterBoot();   // server / local mode
   }
 })().catch(e=>{ console.error(e); if(!map) createMap(); });
