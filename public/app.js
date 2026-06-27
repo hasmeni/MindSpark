@@ -4417,6 +4417,7 @@ $('#mapTitle').addEventListener('input',e=>{
 /* ---------- autosave ---------- */
 function scheduleSave(){
   if(!map || READONLY || map._ephemeral) return;   // live-session guest map is not persisted to a repo
+  if(map._cloudEdit){ scheduleCloudSave(); return; }   // shared cloud map saves back to the Durable Object
   const target = map;          // bind THIS map: switching maps before the timer
   _pendingSaveMap = target;    // fires must NOT redirect the write onto another map
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
@@ -4465,7 +4466,7 @@ function exportMenu(){
     <div class="ex-grp">Share &amp; collaborate</div>
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
     <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
-    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share link</b><i>Short link, served from the cloud (beta)</i></span></button>
+    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share (editable)</b><i>Publish + copy an edit link collaborators can save to</i></span></button>
     <div class="ex-grp">Tools</div>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
@@ -7036,33 +7037,64 @@ function sharedApiUrl(id){
 async function publishSharedMap(){
   if(!map || !map.id){ toast('Open a map first'); return; }
   const url=sharedApiUrl(map.id); if(!url){ toast('Cloud sharing isn\u2019t configured'); return; }
+  if(!map._editToken) map._editToken = 'e'+Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6);
   try{
-    const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(_shareePayload(map)) });
+    const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body:JSON.stringify(_shareePayload(map)) });
     if(!r.ok) throw new Error('HTTP '+r.status);
-    const link=location.origin+location.pathname+'#shared='+map.id;
-    try{ await navigator.clipboard.writeText(link); }catch(e){}
-    toast('Cloud share link copied');
+    const editLink=location.origin+location.pathname+'#shared='+map.id+':'+map._editToken;
+    try{ await navigator.clipboard.writeText(editLink); }catch(e){}
+    if(typeof scheduleSave==='function' && !map._cloudEdit) scheduleSave();   // persist the token in the owner repo so re-publishing reuses it
+    toast('Edit link copied — collaborators can edit & save (view link: same without the “:token”)');
   }catch(e){ toast('Could not publish: '+(e.message||e)); }
+}
+
+let _cloudSaveTimer=0;
+function scheduleCloudSave(){
+  const ce=map._cloudEdit; if(!ce) return;
+  $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
+  clearTimeout(_cloudSaveTimer);
+  _cloudSaveTimer=setTimeout(async()=>{
+    _cloudSaveTimer=0; const url=sharedApiUrl(ce.id);
+    if(!url){ $('#saveText').textContent='Save failed'; return; }
+    try{
+      const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify(_shareePayload(map)) });
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
+    }catch(e){
+      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
+      toast('Couldn\u2019t save shared map: '+(e.message||e));
+    }
+  }, 1200);
+}
+function showCloudEditBanner(){
+  if($('#cloudEditBanner')) return;
+  const b=document.createElement('div'); b.id='cloudEditBanner'; b.className='shared-banner';
+  b.innerHTML='<span class="sb-eye">\u270F\uFE0F</span>'
+    +'<span class="sb-text">You\u2019re editing a <b>shared</b> map \u2014 changes save for everyone with the link</span>';
+  document.body.appendChild(b);
 }
 // On boot: #shared=<id> loads the stored map from the cloud, read-only, no session.
 async function tryEnterSharedMap(){
-  const mt=(location.hash||'').match(/^#shared=(.+)$/);
+  const mt=(location.hash||'').match(/^#shared=([^:]+)(?::(.+))?$/);
   if(!mt) return false;
   const id=decodeURIComponent(mt[1]);
+  const token=mt[2]?decodeURIComponent(mt[2]):null;
   const url=sharedApiUrl(id); if(!url) return false;
   let data;
   try{ const r=await fetch(url); if(!r.ok) throw new Error('HTTP '+r.status); data=await r.json(); }
   catch(e){ console.error('shared map load failed', e); return false; }
-  READONLY=true;
-  document.body.classList.add('shared-view');
+  const editable=!!token;
+  READONLY=!editable;
+  document.body.classList.add(editable?'cloud-edit':'shared-view');
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
-  sel=null;
-  $('#mapTitle').value=map.title; $('#mapTitle').readOnly=true;
+  if(editable) map._cloudEdit={ id, token };
+  sel=null; history=[]; hpos=-1;
+  $('#mapTitle').value=map.title; $('#mapTitle').readOnly=!editable;
   $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
-  showSharedBanner();
+  if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
   let tries=0;
   const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); } else if(tries++<60){ requestAnimationFrame(settle); } };
   requestAnimationFrame(settle);

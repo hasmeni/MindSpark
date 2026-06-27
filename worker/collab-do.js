@@ -30,7 +30,7 @@ export class CollabRoom extends DurableObject {
   // persistent source of truth a collaborator can open any time.
   async _http(request){
     const origin = (this.env && this.env.ALLOWED_ORIGIN) || '*';
-    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Edit-Token' };
     const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (request.method === 'GET'){
@@ -40,6 +40,11 @@ export class CollabRoom extends DurableObject {
     if (request.method === 'PUT'){
       let m; try{ m = await request.json(); }catch(e){ return json(400, { error: 'bad json' }); }
       if (!m || typeof m !== 'object') return json(400, { error: 'map object required' });
+      // Writes require the edit token. The first PUT claims it; later PUTs must match.
+      const provided = request.headers.get('X-Edit-Token') || '';
+      const storedTok = await this.ctx.storage.get('editToken');
+      if (storedTok){ if (provided !== storedTok) return json(403, { error: 'invalid edit token' }); }
+      else { if (!provided) return json(400, { error: 'edit token required' }); await this.ctx.storage.put('editToken', provided); }
       await this.ctx.storage.put('snapshot', m);
       return json(200, { ok: true });
     }
