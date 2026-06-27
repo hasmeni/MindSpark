@@ -4481,11 +4481,12 @@ function exportMenu(){
   closeAllMenus();
   const pop=document.createElement('div');
   pop.className='export-pop';
+  const _collabItems = collabAvailable() ? `
+    <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
+    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share (editable)</b><i>Publish + copy an edit link collaborators can save to</i></span></button>` : '';
   pop.innerHTML=`
     <div class="ex-grp">Share &amp; collaborate</div>
-    <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>
-    <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
-    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share (editable)</b><i>Publish + copy an edit link collaborators can save to</i></span></button>
+    <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>${_collabItems}
     <div class="ex-grp">Tools</div>
     <button data-a="history"><span class="ex-ic">🕘</span><span><b>Version history</b><i>Browse & restore past versions</i></span></button>
     <button data-a="present"><span class="ex-ic">▶</span><span><b>Presentation mode</b><i>Step through the map one topic at a time</i></span></button>
@@ -4517,8 +4518,8 @@ function exportMenu(){
   pop.querySelectorAll('button').forEach(b=>b.onclick=()=>{
     const a=b.dataset.a; close();
     if(a==='share') copyShareLink();
-    if(a==='collab') Collab.startHost();
-    if(a==='cloudshare') publishSharedMap();
+    if(a==='collab'){ if(collabAvailable()) Collab.startHost(); else toast('Live collaboration needs the hosted app'); }
+    if(a==='cloudshare'){ if(collabAvailable()) publishSharedMap(); else toast('Cloud share needs the hosted app'); }
     else if(a==='history') showVersionHistory();
     else if(a==='present') startPresentation();
     else if(a==='buildprompt') showBuildPrompt(sel || (map&&map.rootId));
@@ -6617,6 +6618,9 @@ function showUserPill(){
 // ============================================================
 const GH_OAUTH = { clientId: 'Ov23liCukvrI3Zs9p3Px', workerUrl: 'https://mindspark-oauth.githubpage.workers.dev/' };
 function oauthConfigured(){ return !!(GH_OAUTH.clientId && GH_OAUTH.workerUrl); }
+// Live collaboration & cloud share rely on the Cloudflare worker, whose CORS/origin
+// is bound to the deployed app — they can't work from local (server-mode) hosting.
+function collabAvailable(){ return MODE==='cloud' && !!(GH_OAUTH && GH_OAUTH.workerUrl); }
 
 // Shared success path for BOTH login methods (PAT and OAuth).
 async function completeCloudLogin(token){
@@ -7133,7 +7137,7 @@ function adoptCloudMerged(merged){
   if($('#mapTitle')) $('#mapTitle').value=map.title;
   render();
 }
-let _cloudSaveTimer=0;
+let _cloudSaveTimer=0, _cloudPollTimer=0, _cloudPollSig='';
 function scheduleCloudSave(){
   const ce=map._cloudEdit; if(!ce) return;
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
@@ -7150,6 +7154,7 @@ function scheduleCloudSave(){
       const res=await r.json().catch(()=>null);
       if(res && res.map) adoptCloudMerged(res.map);
       map._cloudBase=_cloneObj(_shareePayload(map));   // base = what's now on the server
+      _cloudPollSig = JSON.stringify(res && res.map ? res.map : _shareePayload(map));
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
     }catch(e){
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
@@ -7157,6 +7162,26 @@ function scheduleCloudSave(){
     }
   }, 1200);
 }
+// Lightweight polling so shared maps reflect others' edits without a live session.
+function startCloudPoll(id){ stopCloudPoll(); _cloudPollTimer=setInterval(()=>cloudPollOnce(id), 5000); }
+function stopCloudPoll(){ if(_cloudPollTimer){ clearInterval(_cloudPollTimer); _cloudPollTimer=0; } }
+async function cloudPollOnce(id){
+  if(!map || document.hidden) return;
+  if(map._cloudView!==id){ stopCloudPoll(); return; }   // switched away -> stop; never adopt onto another map
+  const url=sharedApiUrl(id); if(!url) return;
+  let data; try{ const r=await fetch(url); if(!r.ok) return; data=await r.json(); }catch(e){ return; }
+  const sig=JSON.stringify(data);
+  if(sig===_cloudPollSig) return;                        // nothing new since last poll
+  if(map._cloudEdit){
+    const pending = cloudDiff(map._cloudBase||_shareePayload(map), _shareePayload(map)).length>0;
+    if(pending) return;                                  // don't stomp unsaved local edits; next save merges
+    adoptCloudMerged(data); map._cloudBase=_cloneObj(_shareePayload(map));
+  } else {
+    adoptCloudMerged(data);                              // read-only viewer reflects latest
+  }
+  _cloudPollSig=sig;
+}
+window.addEventListener('pagehide', stopCloudPoll);
 function showCloudEditBanner(){
   if($('#cloudEditBanner')) return;
   const b=document.createElement('div'); b.id='cloudEditBanner'; b.className='shared-banner';
@@ -7180,17 +7205,24 @@ async function tryEnterSharedMap(){
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
-  if(editable){ map._cloudEdit={ id, token }; map._cloudBase=_cloneObj(_shareePayload(map)); }
+  map._cloudView=id;
+  if(editable){ map._cloudEdit={ id, token }; }
   sel=null; history=[]; hpos=-1;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=!editable;
   $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
+  // Snapshot the merge base AFTER render so layout-assigned node coords are baked in
+  // — otherwise the poll mistakes layout for unsaved edits and never adopts changes.
+  if(editable) map._cloudBase=_cloneObj(_shareePayload(map));
   if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
   rememberSharedMap({ id, token, title: map.title, color: map.color });
+  _cloudPollSig = JSON.stringify(data);
+  startCloudPoll(id);
   let tries=0;
-  const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); } else if(tries++<60){ requestAnimationFrame(settle); } };
+  const rebase=()=>{ if(editable) map._cloudBase=_cloneObj(_shareePayload(map)); };
+  const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); rebase(); } else if(tries++<60){ requestAnimationFrame(settle); } };
   requestAnimationFrame(settle);
-  window.addEventListener('load', ()=>{ autoLayout(); fit(); }, { once:true });
+  window.addEventListener('load', ()=>{ autoLayout(); fit(); rebase(); }, { once:true });
   return true;
 }
 
