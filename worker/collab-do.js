@@ -25,12 +25,31 @@ export class CollabRoom extends DurableObject {
     return new Response(null, { status:101, webSocket: client });
   }
 
+  // Validate the edit token. allowClaim lets the FIRST write claim an unclaimed map.
+  async _tokenOk(request, allowClaim){
+    const provided = request.headers.get('X-Edit-Token') || '';
+    const stored = await this.ctx.storage.get('editToken');
+    if (stored) return provided === stored ? { ok: true } : { ok: false, status: 403, error: 'invalid edit token' };
+    if (allowClaim){ if (!provided) return { ok: false, status: 400, error: 'edit token required' }; await this.ctx.storage.put('editToken', provided); return { ok: true }; }
+    return { ok: false, status: 404, error: 'map not found' };
+  }
+  // Apply per-node ops onto the stored snapshot so concurrent async edits converge
+  // (node-level last-write-wins) instead of whole-map overwrite.
+  _applyOps(snap, ops){
+    snap.nodes = snap.nodes || {};
+    for (const op of (ops || [])){
+      if (op && op.t === 'node' && op.id) snap.nodes[op.id] = op.n;
+      else if (op && op.t === 'del' && op.id) delete snap.nodes[op.id];
+      else if (op && op.t === 'meta' && op.k) snap[op.k] = op.v;
+    }
+    return snap;
+  }
   // Durable shared-map HTTP API (no session needed): GET loads the stored map,
   // PUT publishes/updates it. This promotes the in-storage snapshot to a
   // persistent source of truth a collaborator can open any time.
   async _http(request){
     const origin = (this.env && this.env.ALLOWED_ORIGIN) || '*';
-    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Edit-Token' };
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, PUT, PATCH, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, X-Edit-Token' };
     const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (request.method === 'GET'){
@@ -40,13 +59,20 @@ export class CollabRoom extends DurableObject {
     if (request.method === 'PUT'){
       let m; try{ m = await request.json(); }catch(e){ return json(400, { error: 'bad json' }); }
       if (!m || typeof m !== 'object') return json(400, { error: 'map object required' });
-      // Writes require the edit token. The first PUT claims it; later PUTs must match.
-      const provided = request.headers.get('X-Edit-Token') || '';
-      const storedTok = await this.ctx.storage.get('editToken');
-      if (storedTok){ if (provided !== storedTok) return json(403, { error: 'invalid edit token' }); }
-      else { if (!provided) return json(400, { error: 'edit token required' }); await this.ctx.storage.put('editToken', provided); }
+      const t = await this._tokenOk(request, true);   // first PUT claims the token
+      if (!t.ok) return json(t.status, { error: t.error });
       await this.ctx.storage.put('snapshot', m);
       return json(200, { ok: true });
+    }
+    if (request.method === 'PATCH'){
+      const t = await this._tokenOk(request, false);  // map must already be claimed
+      if (!t.ok) return json(t.status, { error: t.error });
+      let body; try{ body = await request.json(); }catch(e){ return json(400, { error: 'bad json' }); }
+      const ops = Array.isArray(body && body.ops) ? body.ops : [];
+      let snap = await this.ctx.storage.get('snapshot') || { nodes: {} };
+      snap = this._applyOps(snap, ops);               // merge onto current -> no whole-map clobber
+      await this.ctx.storage.put('snapshot', snap);
+      return json(200, { ok: true, map: snap });      // return merged map so the client converges
     }
     return json(405, { error: 'method not allowed' });
   }

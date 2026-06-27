@@ -1331,3 +1331,7 @@
 .ex-grp{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;
   color:var(--ink-soft); opacity:.65; padding:10px 14px 3px; user-select:none; }
 .export-pop > .ex-grp:first-child{ padding-top:6px; }
+
+/* Shared-with-me section in the sidebar. */
+.map-group-label{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:var(--ink-soft); opacity:.6; padding:12px 12px 4px; user-select:none; }
+.map-item .shared-badge{ font-size:11px; opacity:.7; flex:0 0 auto; margin-right:2px; }

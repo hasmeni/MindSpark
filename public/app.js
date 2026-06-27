@@ -3189,6 +3189,25 @@ async function refreshList(){
     el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openRowMenu(ev.currentTarget, m); };
     list.appendChild(el);
   });
+  // Shared-with-me: cloud maps you've opened via a link (kept per-browser).
+  const shared=_sharedStore();
+  if(shared.length){
+    const hdr=document.createElement('div'); hdr.className='map-group-label'; hdr.textContent='Shared with me';
+    list.appendChild(hdr);
+    shared.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).forEach(sm=>{
+      const activeShared = (map && map._cloudEdit && map._cloudEdit.id===sm.id) || (map && map.id==='shared-'+sm.id);
+      const el=document.createElement('div');
+      el.className='map-item shared-row'+(activeShared?' active':'');
+      el.innerHTML='<span class="dot" style="background:'+(sm.color||'#e0613a')+'"></span>'+
+        '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+
+        '<span class="shared-badge" title="'+(sm.token?'Editable':'View only')+'">'+(sm.token?'\u270F\uFE0F':'\uD83D\uDC41')+'</span>'+
+        '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
+      el.style.cursor='pointer';
+      el.onclick=()=>openSharedFromLibrary(sm);
+      el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedRowMenu(ev.currentTarget, sm); };
+      list.appendChild(el);
+    });
+  }
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
@@ -7033,6 +7052,45 @@ function sharedApiUrl(id){
   try{ const u=new URL(GH_OAUTH.workerUrl); return u.origin+'/api/collab/'+encodeURIComponent(id); }
   catch(e){ return null; }
 }
+// ---- "Shared with me" library: links you've opened, kept per-browser ----
+function _sharedStore(){ try{ return JSON.parse(localStorage.getItem('mindspark:sharedMaps')||'[]'); }catch(e){ return []; } }
+function _saveSharedStore(a){ try{ localStorage.setItem('mindspark:sharedMaps', JSON.stringify(a)); }catch(e){} }
+function rememberSharedMap(entry){
+  if(!entry || !entry.id) return;
+  const a=_sharedStore(); const at=a.findIndex(x=>x.id===entry.id);
+  const rec={ id:entry.id, token: entry.token || (at>=0?a[at].token:null),
+              title: entry.title || (at>=0?a[at].title:'Shared map'),
+              color: entry.color || (at>=0?a[at].color:'#e0613a'), addedAt: Date.now() };
+  if(at>=0) a[at]=rec; else a.unshift(rec);
+  _saveSharedStore(a);
+}
+function forgetSharedMap(id){ _saveSharedStore(_sharedStore().filter(x=>x.id!==id)); refreshList(); toast('Removed from list'); }
+function openSharedFromLibrary(sm){
+  const hash='#shared='+sm.id+(sm.token?(':'+sm.token):'');
+  location.hash=hash; location.reload();
+}
+function openSharedRowMenu(btn, sm){
+  if(_rowPop && _rowPop._for==='sh:'+sm.id){ closeRowMenu(); return; }
+  if(typeof closeAllMenus==='function') closeAllMenus();
+  closeRowMenu();
+  const pop=document.createElement('div'); pop.className='row-pop'; pop._for='sh:'+sm.id;
+  pop.innerHTML='<button data-a="open"><span class="rp-ic">\u2197</span>Open</button>'+
+    (sm.token?'<button data-a="copyedit"><span class="rp-ic">\u270F\uFE0F</span>Copy edit link</button>':'')+
+    '<button data-a="copyview"><span class="rp-ic">\uD83D\uDD17</span>Copy view link</button>'+
+    '<button data-a="forget" class="danger"><span class="rp-ic">\u2715</span>Remove from list</button>';
+  const row = btn.closest('.map-item') || btn.parentElement;
+  row.appendChild(pop);
+  const rb = btn.getBoundingClientRect();
+  if(rb.bottom + pop.offsetHeight + 10 > window.innerHeight){ pop.classList.add('flip-up'); }
+  const base=location.origin+location.pathname+'#shared='+sm.id;
+  pop.querySelector('[data-a="open"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openSharedFromLibrary(sm); };
+  const ce=pop.querySelector('[data-a="copyedit"]'); if(ce) ce.onclick=async ev=>{ ev.stopPropagation(); closeRowMenu(); try{ await navigator.clipboard.writeText(base+':'+sm.token); toast('Edit link copied'); }catch(e){} };
+  pop.querySelector('[data-a="copyview"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu(); try{ await navigator.clipboard.writeText(base); toast('View link copied'); }catch(e){} };
+  pop.querySelector('[data-a="forget"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); forgetSharedMap(sm.id); };
+  _rowPop=pop;
+  _rowPopOut=(e)=>{ if(_rowPop && (!e || e.type!=='mousedown' || !_rowPop.contains(e.target))) closeRowMenu(); };
+  setTimeout(()=>{ document.addEventListener('mousedown', _rowPopOut, true); window.addEventListener('scroll', closeRowMenu, true); window.addEventListener('blur', closeRowMenu); },0);
+}
 // Publish the current map to the cloud store; returns a short #shared=<id> link.
 async function publishSharedMap(){
   if(!map || !map.id){ toast('Open a map first'); return; }
@@ -7048,6 +7106,33 @@ async function publishSharedMap(){
   }catch(e){ toast('Could not publish: '+(e.message||e)); }
 }
 
+function _cloneObj(o){ return JSON.parse(JSON.stringify(o)); }
+// Diff the loaded base against the current map -> per-node ops the server merges.
+function cloudDiff(base, cur){
+  const ops=[]; const bn=(base&&base.nodes)||{}, cn=(cur&&cur.nodes)||{};
+  for(const id in cn){ if(JSON.stringify(bn[id])!==JSON.stringify(cn[id])) ops.push({t:'node', id, n:cn[id]}); }
+  for(const id in bn){ if(!cn[id]) ops.push({t:'del', id}); }
+  ['title','color','rootId','layout','style'].forEach(k=>{ if((base||{})[k]!==(cur||{})[k]) ops.push({t:'meta',k,v:cur[k]}); });
+  if(JSON.stringify((base&&base.links)||[])!==JSON.stringify((cur&&cur.links)||[])) ops.push({t:'meta',k:'links',v:cur.links});
+  if(JSON.stringify((base&&base.vars)||{})!==JSON.stringify((cur&&cur.vars)||{})) ops.push({t:'meta',k:'vars',v:cur.vars});
+  return ops;
+}
+// Adopt the server's merged map (your edits + others') so editors converge.
+function adoptCloudMerged(merged){
+  if(!merged || typeof merged!=='object') return;
+  const selId = sel && sel.id;
+  map.nodes = merged.nodes||{};
+  map.links = merged.links||[];
+  if(merged.title!=null) map.title=merged.title;
+  if(merged.color) map.color=merged.color;
+  if(merged.rootId) map.rootId=merged.rootId;
+  if(merged.layout) map.layout=merged.layout;
+  if('style' in merged) map.style=merged.style;
+  if(merged.vars) map.vars=merged.vars;
+  sel = (selId && map.nodes[selId]) ? map.nodes[selId] : null;
+  if($('#mapTitle')) $('#mapTitle').value=map.title;
+  render();
+}
 let _cloudSaveTimer=0;
 function scheduleCloudSave(){
   const ce=map._cloudEdit; if(!ce) return;
@@ -7056,9 +7141,15 @@ function scheduleCloudSave(){
   _cloudSaveTimer=setTimeout(async()=>{
     _cloudSaveTimer=0; const url=sharedApiUrl(ce.id);
     if(!url){ $('#saveText').textContent='Save failed'; return; }
+    const cur=_shareePayload(map);
+    const ops=cloudDiff(map._cloudBase||cur, cur);
+    if(!ops.length){ $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; return; }
     try{
-      const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify(_shareePayload(map)) });
+      const r=await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) });
       if(!r.ok) throw new Error('HTTP '+r.status);
+      const res=await r.json().catch(()=>null);
+      if(res && res.map) adoptCloudMerged(res.map);
+      map._cloudBase=_cloneObj(_shareePayload(map));   // base = what's now on the server
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
     }catch(e){
       $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
@@ -7089,12 +7180,13 @@ async function tryEnterSharedMap(){
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
-  if(editable) map._cloudEdit={ id, token };
+  if(editable){ map._cloudEdit={ id, token }; map._cloudBase=_cloneObj(_shareePayload(map)); }
   sel=null; history=[]; hpos=-1;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=!editable;
   $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
   if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
+  rememberSharedMap({ id, token, title: map.title, color: map.color });
   let tries=0;
   const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); } else if(tries++<60){ requestAnimationFrame(settle); } };
   requestAnimationFrame(settle);
