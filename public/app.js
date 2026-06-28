@@ -7099,12 +7099,20 @@ function openSharedRowMenu(btn, sm){
 // Publish the current map to the cloud store; returns a short #shared=<id> link.
 async function publishSharedMap(){
   if(!map || !map.id){ toast('Open a map first'); return; }
-  const url=sharedApiUrl(map.id); if(!url){ toast('Cloud sharing isn\u2019t configured'); return; }
+  if(!sharedApiUrl(map.id)){ toast('Cloud sharing isn\u2019t configured'); return; }
   if(!map._editToken) map._editToken = 'e'+Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,6);
+  let room = map._shareRoom || map.id;
+  const body = JSON.stringify(_shareePayload(map));
   try{
-    const r=await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body:JSON.stringify(_shareePayload(map)) });
+    let r=await fetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
+    if(r.status===403){
+      // Base room was claimed under a different (older) token and is locked. Move to a
+      // fresh room id so the owner always gets a working edit link.
+      room = map.id+'~'+Math.random().toString(36).slice(2,7); map._shareRoom = room;
+      r=await fetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
+    }
     if(!r.ok) throw new Error('HTTP '+r.status);
-    const editLink=location.origin+location.pathname+'#shared='+map.id+':'+map._editToken;
+    const editLink=location.origin+location.pathname+'#shared='+room+':'+map._editToken;
     try{ await navigator.clipboard.writeText(editLink); }catch(e){}
     if(typeof scheduleSave==='function' && !map._cloudEdit) scheduleSave();   // persist the token in the owner repo so re-publishing reuses it
     toast('Edit link copied — collaborators can edit & save (view link: same without the “:token”)');
@@ -7141,7 +7149,34 @@ function adoptCloudMerged(merged){
 let _cloudSaveTimer=0, _cloudPollTimer=0, _cloudPollSig='';
 // Perform the cloud save (diff -> PATCH -> adopt merged). Separated so a map switch
 // can flush a pending save immediately.
-async function _doCloudSave(ce){
+// If the owner is locked out of their own shared map (the Durable Object room was
+// claimed under a token from an earlier build/session, so this link's token no
+// longer matches \u2014 a 403), re-publish the CURRENT content to a fresh room id and
+// rebind the live session. The old link is already dead, so a new one is the only fix.
+async function _recoverCloudSave(ce){
+  if(map._healing) return false; map._healing=true;
+  try{
+    const baseId=String(ce.id||'').split('~')[0];
+    let owned=null; try{ owned=await Store.get(baseId); }catch(e){}
+    if(!owned) return false;                     // not the owner -> can't reset someone else's room
+    const room=baseId+'~'+Math.random().toString(36).slice(2,7);
+    const token=owned._editToken || ce.token || ('e'+Math.random().toString(36).slice(2,10));
+    const url=sharedApiUrl(room); if(!url) return false;
+    const r=await fetch(url,{method:'PUT',headers:{'Content-Type':'application/json','X-Edit-Token':token},body:JSON.stringify(_shareePayload(map))});
+    if(!r.ok) return false;
+    map._cloudEdit={id:room,token}; map._cloudView=room;
+    map._cloudBase=_cloneObj(_shareePayload(map));
+    rememberSharedMap({id:room,token,title:map.title,color:map.color});
+    try{ _saveSharedStore(_sharedStore().filter(x=>x.id!==baseId)); }catch(e){}   // drop the dead base-room entry
+    const link=location.origin+location.pathname+'#shared='+room+':'+token;
+    try{ window.history.replaceState(null,'',link); }catch(e){}
+    try{ await navigator.clipboard.writeText(link); }catch(e){}
+    _cloudPollSig=JSON.stringify(_shareePayload(map)); stopCloudPoll(); startCloudPoll(room);
+    toast('Old share link was out of sync \u2014 created a fresh editable link (copied). Re-share it with collaborators.');
+    return true;
+  } finally { map._healing=false; }
+}
+async function _doCloudSave(ce, retried){
   const url=sharedApiUrl(ce.id);
   if(!url){ $('#saveText').textContent='Save failed'; return; }
   const cur=_shareePayload(map);
@@ -7156,6 +7191,12 @@ async function _doCloudSave(ce){
     _cloudPollSig = JSON.stringify(res && res.map ? res.map : _shareePayload(map));
     $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved';
   }catch(e){
+    if(!retried && /\b403\b/.test(String(e.message))){
+      if(await _recoverCloudSave(ce)) return _doCloudSave(map._cloudEdit, true);
+      $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
+      toast('This shared link is out of sync. Ask the map owner for a fresh edit link.');
+      return;
+    }
     $('#savePill').classList.remove('saving'); $('#saveText').textContent='Save failed';
     toast('Couldn\u2019t save shared map: '+(e.message||e));
   }
@@ -7224,6 +7265,7 @@ function _applySharedMap(id, token, data){
   READONLY=!editable;
   document.body.classList.remove('cloud-edit','shared-view');
   document.body.classList.add(editable?'cloud-edit':'shared-view');
+  const _up=$('#userPill'); if(_up) _up.style.display='none';   // shared maps aren't tied to your GitHub
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
@@ -7253,6 +7295,7 @@ function exitSharedMode(){
   const sb=document.getElementById('sharedBanner'); if(sb) sb.remove();
   document.body.classList.remove('cloud-edit','shared-view');
   READONLY=false;
+  if(typeof CloudStore!=='undefined' && CloudStore.user) showUserPill();   // restore your account pill
   const t=$('#mapTitle'); if(t) t.readOnly=false;
   _cloudPollSig='';
   if((location.hash||'').indexOf('#shared=')===0){
