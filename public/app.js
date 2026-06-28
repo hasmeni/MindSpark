@@ -6628,11 +6628,18 @@ function oauthConfigured(){ return !!(GH_OAUTH.clientId && GH_OAUTH.workerUrl); 
 function collabAvailable(){ return MODE==='cloud' && !!(GH_OAUTH && GH_OAUTH.workerUrl); }
 
 // Shared success path for BOTH login methods (PAT and OAuth).
+// A cloud-backed #shared= link opened while signed out is parked here, then opened
+// in-place once sign-in completes (Overleaf-style: shared links require an account).
+let _pendingSharedLink = null;
 async function completeCloudLogin(token){
   await CloudStore.login(token);
   const ov=$('#loginOverlay'); if(ov) ov.style.display='none';
   showUserPill();
   await proceedBoot();
+  if(_pendingSharedLink){
+    const s=_pendingSharedLink; _pendingSharedLink=null;
+    try{ await openSharedInPlace(s.id, s.token); }catch(e){ console.warn('open shared after login failed:', e); }
+  }
 }
 
 // Open GitHub's authorize page in a popup. The Worker callback posts the token
@@ -6672,9 +6679,14 @@ window.addEventListener('message', async (ev)=>{
   catch(e){ if(err) err.textContent = e.message || String(e); }
 });
 
-function showLoginOverlay(){
+function showLoginOverlay(opts){
   const ov=$('#loginOverlay'); if(!ov) return;
   ov.style.display='flex';
+  const note=$('#loginShareNote');
+  if(note){
+    if(opts && opts.shared){ note.textContent='This map was shared with you. Sign in with GitHub to open it.'; note.style.display='block'; }
+    else { note.style.display='none'; }
+  }
   const sign=$('#ghSignIn'), pat=$('#ghPat'), err=$('#ghError');
   // OAuth button: only shown when an OAuth App + Worker are configured.
   const oauthBox=$('#loginOauth'), oauthBtn=$('#ghOauthBtn');
@@ -7454,7 +7466,7 @@ async function tryEnterLiveSession(){
   const {mode, loggedIn} = await initStore();
   if(mode==='cloud'){
     if(loggedIn){ showUserPill(); await proceedBoot(); await _openSharedAfterBoot(); }
-    else if(_sh){ await tryEnterSharedMap(); }   // external recipient: standalone view
+    else if(_sh){ _pendingSharedLink={ id:decodeURIComponent(_sh[1]), token:_sh[2]?decodeURIComponent(_sh[2]):null }; showLoginOverlay({ shared:true }); }   // shared link -> require sign-in first
     else { showLoginOverlay(); }
   } else {
     await proceedBoot(); await _openSharedAfterBoot();   // server / local mode

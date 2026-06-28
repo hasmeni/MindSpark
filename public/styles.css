@@ -1364,3 +1364,7 @@ body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
 .access-modal .am-newrole{ background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.14); color:inherit; border-radius:8px; padding:8px; }
 .access-modal .am-addbtn{ background:#e0613a; border:none; color:#fff; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
 .access-modal .am-foot{ margin-top:14px; font-size:12px; opacity:.55; }
+
+/* Contextual note on the login overlay when access requires sign-in (e.g. a shared map) */
+.login-share-note{ margin:0 0 14px; padding:10px 13px; border-radius:10px; font-size:13.5px; line-height:1.4;
+  background:rgba(224,97,58,.12); border:1px solid rgba(224,97,58,.35); color:#f3c9bb; }
