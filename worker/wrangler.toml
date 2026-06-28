@@ -5,6 +5,11 @@ compatibility_date = "2024-09-01"
 # Secrets are NOT stored here. Set them once with:
 #   wrangler secret put GITHUB_CLIENT_ID
 #   wrangler secret put GITHUB_CLIENT_SECRET
+#
+# For identity-based sharing ACLs (named collaborators, revoke), set a signing secret
+# used to mint/verify session JWTs (any long random string):
+#   wrangler secret put AUTH_SECRET
+# If AUTH_SECRET is unset, the app falls back to legacy capability links only.
 
 # For the GPT map-import endpoint (POST /api/import) — returns a read-only
 # #view= share link, so NO GitHub PAT is needed:

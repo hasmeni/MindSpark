@@ -1340,3 +1340,27 @@
 /* Cloud-edit shows the sidebar AND toolbar, so shift the whole app below the fixed
    shared banner (measured into --shared-banner-h so it adapts when the banner wraps). */
 body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
+
+/* ---- Manage-access modal (identity ACLs) ---- */
+.access-modal{ position:fixed; inset:0; background:rgba(8,10,18,.55); display:grid; place-items:center; z-index:600; }
+.access-modal .am-card{ width:min(440px,92vw); max-height:86vh; overflow:auto; background:var(--panel,#1c2030); color:var(--ink,#e8ebf5);
+  border:1px solid rgba(255,255,255,.08); border-radius:14px; box-shadow:0 24px 60px rgba(0,0,0,.5); padding:16px 18px; }
+.access-modal .am-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; font-size:16px; }
+.access-modal .am-x{ background:none; border:none; color:inherit; font-size:22px; line-height:1; cursor:pointer; opacity:.7; }
+.access-modal .am-x:hover{ opacity:1; }
+.access-modal .am-sec{ margin-top:14px; }
+.access-modal .am-lbl{ font-size:12px; text-transform:uppercase; letter-spacing:.04em; opacity:.6; margin-bottom:8px; }
+.access-modal .am-link label{ display:block; padding:5px 0; font-size:14px; cursor:pointer; }
+.access-modal .am-link input{ margin-right:8px; }
+.access-modal .am-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+.access-modal .am-row{ display:flex; align-items:center; gap:10px; padding:7px 10px; background:rgba(255,255,255,.04); border-radius:8px; }
+.access-modal .am-who{ flex:1; font-size:14px; }
+.access-modal .am-role{ font-size:12px; opacity:.7; }
+.access-modal .am-rm{ background:none; border:1px solid rgba(255,255,255,.16); color:inherit; border-radius:6px; padding:3px 9px; font-size:12px; cursor:pointer; }
+.access-modal .am-rm:hover{ border-color:#e0613a; color:#e0613a; }
+.access-modal .am-empty{ font-size:13px; opacity:.6; padding:6px 2px; }
+.access-modal .am-add{ display:flex; gap:8px; }
+.access-modal .am-user{ flex:1; background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.14); color:inherit; border-radius:8px; padding:8px 10px; font-size:14px; }
+.access-modal .am-newrole{ background:rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.14); color:inherit; border-radius:8px; padding:8px; }
+.access-modal .am-addbtn{ background:#e0613a; border:none; color:#fff; border-radius:8px; padding:8px 14px; font-weight:600; cursor:pointer; }
+.access-modal .am-foot{ margin-top:14px; font-size:12px; opacity:.55; }

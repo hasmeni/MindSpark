@@ -28,6 +28,7 @@
 
 import { handleImport } from './import-core.js';
 export { CollabRoom } from './collab-do.js';
+import { signJWT } from './auth-core.js';
 
 export default {
   async fetch(request, env) {
@@ -35,10 +36,40 @@ export default {
 
     // Live collaboration WebSocket: /api/collab/<roomId> -> the map's Durable Object.
     if (url.pathname.startsWith('/api/collab/')) {
-      const room = decodeURIComponent(url.pathname.slice('/api/collab/'.length));
+      const rest = url.pathname.slice('/api/collab/'.length);
+      const room = decodeURIComponent(rest.split('/')[0] || '');   // first segment only; /acl,/link go to the DO
       if (!room) return new Response('room required', { status: 400 });
       const stub = env.COLLAB.get(env.COLLAB.idFromName(room));
       return stub.fetch(request);
+    }
+
+    // Session token: verify the caller's GitHub token, mint a short-lived signed JWT
+    // (identity = GitHub id + login) the app sends as a Bearer to the collab DO for ACLs.
+    if (url.pathname === '/api/session') {
+      const allowed = (env.ALLOWED_ORIGIN || '*').replace(/\/+$/, '') || '*';
+      const cors = { 'Access-Control-Allow-Origin': allowed, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' };
+      const jres = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
+      if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+      if (request.method !== 'POST') return jres(405, { error: 'method not allowed' });
+      if (!env.AUTH_SECRET) return jres(501, { error: 'identity not configured' });   // app falls back to legacy links
+      let ghToken = '';
+      const auth = request.headers.get('Authorization') || '';
+      const m = auth.match(/^Bearer\s+(.+)$/i);
+      if (m) ghToken = m[1];
+      if (!ghToken) { try { const b = await request.json(); ghToken = (b && b.token) || ''; } catch (e) {} }
+      if (!ghToken) return jres(400, { error: 'github token required' });
+      let u;
+      try {
+        const gh = await fetch('https://api.github.com/user', {
+          headers: { 'Authorization': 'Bearer ' + ghToken, 'User-Agent': 'MindSpark', 'Accept': 'application/vnd.github+json' }
+        });
+        if (!gh.ok) return jres(401, { error: 'invalid github token' });
+        u = await gh.json();
+      } catch (e) { return jres(502, { error: 'github unreachable' }); }
+      if (!u || u.id == null) return jres(401, { error: 'no github identity' });
+      const ttl = 12 * 60 * 60;   // 12h
+      const token = await signJWT({ sub: String(u.id), login: u.login || '' }, env.AUTH_SECRET, ttl);
+      return jres(200, { token, exp: Math.floor(Date.now() / 1000) + ttl, id: String(u.id), login: u.login || '' });
     }
 
     // GPT map import (POST /api/import) — returns a read-only #view= share link.

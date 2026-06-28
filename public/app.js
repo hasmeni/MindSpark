@@ -4486,7 +4486,8 @@ function exportMenu(){
   pop.className='export-pop';
   const _collabItems = collabAvailable() ? `
     <button data-a="collab"><span class="ex-ic">👥</span><span><b>Collaborate live</b><i>Real-time editing — share an invite link</i></span></button>
-    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share (editable)</b><i>Publish + copy an edit link collaborators can save to</i></span></button>` : '';
+    <button data-a="cloudshare"><span class="ex-ic">☁</span><span><b>Cloud share (editable)</b><i>Publish + copy an edit link collaborators can save to</i></span></button>
+    <button data-a="manageaccess"><span class="ex-ic">🔐</span><span><b>Manage access</b><i>Named collaborators &amp; link permissions</i></span></button>` : '';
   pop.innerHTML=`
     <div class="ex-grp">Share &amp; collaborate</div>
     <button data-a="share"><span class="ex-ic">🔗</span><span><b>Copy share link</b><i>Read-only view, no account needed</i></span></button>${_collabItems}
@@ -4523,6 +4524,7 @@ function exportMenu(){
     if(a==='share') copyShareLink();
     if(a==='collab'){ if(collabAvailable()) Collab.startHost(); else toast('Live collaboration needs the hosted app'); }
     if(a==='cloudshare'){ if(collabAvailable()) publishSharedMap(); else toast('Cloud share needs the hosted app'); }
+    if(a==='manageaccess'){ if(collabAvailable()) openAccessPanel(); else toast('Managing access needs the hosted app'); }
     else if(a==='history') showVersionHistory();
     else if(a==='present') startPresentation();
     else if(a==='buildprompt') showBuildPrompt(sel || (map&&map.rootId));
@@ -7060,6 +7062,36 @@ function sharedApiUrl(id){
   try{ const u=new URL(GH_OAUTH.workerUrl); return u.origin+'/api/collab/'+encodeURIComponent(id); }
   catch(e){ return null; }
 }
+// ---- Session identity: a short-lived signed JWT proving the GitHub identity, sent
+// as a Bearer to the collab worker so it can enforce per-map ACLs. If the worker has
+// no AUTH_SECRET configured it returns 501 and we fall back to legacy capability links.
+const Session = {
+  jwt:null, exp:0, id:null, login:null, _pending:null, _off:false,
+  async ensure(){
+    if(this._off) return null;
+    if(this.jwt && (Date.now()/1000) < this.exp-60) return this.jwt;
+    if(this._pending) return this._pending;
+    this._pending=(async()=>{
+      try{
+        if(typeof CloudStore==='undefined' || !CloudStore.token) return null;
+        const base=(GH_OAUTH.workerUrl||'').replace(/\/+$/,''); if(!base) return null;
+        const r=await fetch(base+'/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:CloudStore.token})});
+        if(r.status===501){ this._off=true; return null; }
+        if(!r.ok) return null;
+        const d=await r.json(); this.jwt=d.token; this.exp=d.exp||0; this.id=d.id||null; this.login=d.login||null;
+        return this.jwt;
+      }catch(e){ return null; }
+    })();
+    const v=await this._pending; this._pending=null; return v;
+  },
+  clear(){ this.jwt=null; this.exp=0; this.id=null; this.login=null; this._off=false; }
+};
+// All collab Durable-Object calls go through here so they carry the Bearer identity.
+async function _collabFetch(url, opts={}){
+  const headers={ ...(opts.headers||{}) };
+  const jwt=await Session.ensure(); if(jwt) headers['Authorization']='Bearer '+jwt;
+  return fetch(url, { ...opts, headers });
+}
 // ---- "Shared with me" library: links you've opened, kept per-browser ----
 function _sharedStore(){ try{ return JSON.parse(localStorage.getItem('mindspark:sharedMaps')||'[]'); }catch(e){ return []; } }
 function _saveSharedStore(a){ try{ localStorage.setItem('mindspark:sharedMaps', JSON.stringify(a)); }catch(e){} }
@@ -7104,12 +7136,12 @@ async function publishSharedMap(){
   let room = map._shareRoom || map.id;
   const body = JSON.stringify(_shareePayload(map));
   try{
-    let r=await fetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
+    let r=await _collabFetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
     if(r.status===403){
       // Base room was claimed under a different (older) token and is locked. Move to a
       // fresh room id so the owner always gets a working edit link.
       room = map.id+'~'+Math.random().toString(36).slice(2,7); map._shareRoom = room;
-      r=await fetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
+      r=await _collabFetch(sharedApiUrl(room), { method:'PUT', headers:{'Content-Type':'application/json','X-Edit-Token':map._editToken}, body });
     }
     if(!r.ok) throw new Error('HTTP '+r.status);
     const editLink=location.origin+location.pathname+'#shared='+room+':'+map._editToken;
@@ -7119,6 +7151,74 @@ async function publishSharedMap(){
   }catch(e){ toast('Could not publish: '+(e.message||e)); }
 }
 
+// ---- Identity-based access control: owner manages named collaborators + link access ----
+async function accessApi(roomId, sub, opts){
+  const base=sharedApiUrl(roomId); if(!base) return { status:0, ok:false, d:{} };
+  try{ const r=await _collabFetch(base+(sub?('/'+sub):''), opts||{}); let d={}; try{ d=await r.json(); }catch(e){} return { status:r.status, ok:r.ok, d }; }
+  catch(e){ return { status:0, ok:false, d:{} }; }
+}
+async function _resolveGitHubUser(login){
+  login=String(login||'').trim().replace(/^@/,''); if(!login) return null;
+  try{
+    const h=(typeof CloudStore!=='undefined'&&CloudStore.token)?{Authorization:'token '+CloudStore.token,Accept:'application/vnd.github+json'}:{Accept:'application/vnd.github+json'};
+    const r=await fetch('https://api.github.com/users/'+encodeURIComponent(login),{headers:h});
+    if(!r.ok) return null; const u=await r.json(); return (u&&u.id!=null)?{ id:String(u.id), login:u.login }:null;
+  }catch(e){ return null; }
+}
+function _accessRoomId(){ return (map && (map._cloudView || map._shareRoom || map.id)) || null; }
+async function openAccessPanel(roomId){
+  roomId = roomId || _accessRoomId();
+  if(!roomId){ toast('Publish or open a shared map first'); return; }
+  if(!sharedApiUrl(roomId)){ toast('Cloud sharing isn\u2019t configured'); return; }
+  const acl=await accessApi(roomId,'acl',{method:'GET'});
+  if(acl.status===401){ toast('Sign in to manage access'); return; }
+  if(acl.status===403){ toast('Only the map owner can manage access'); return; }
+  if(!acl.ok){ toast('Couldn\u2019t load access settings \u2014 publish the map first'); return; }
+  _renderAccessPanel(roomId, acl.d);
+}
+function _renderAccessPanel(roomId, data){
+  const ex=document.querySelector('.access-modal'); if(ex) ex.remove();
+  const ov=document.createElement('div'); ov.className='access-modal';
+  const members=data.members||{}; const link=data.linkAccess||'none';
+  const rows=Object.keys(members).map(id=>{
+    const mem=members[id]||{};
+    return '<div class="am-row"><span class="am-who">@'+escapeHtml(mem.login||id)+'</span>'+
+      '<span class="am-role">'+(mem.role==='viewer'?'Viewer':'Editor')+'</span>'+
+      '<button class="am-rm" data-id="'+escapeHtml(id)+'">Remove</button></div>';
+  }).join('') || '<div class="am-empty">No named collaborators yet.</div>';
+  ov.innerHTML='<div class="am-card"><div class="am-head"><b>Manage access</b><button class="am-x" aria-label="Close">\u00d7</button></div>'+
+    '<div class="am-sec"><div class="am-lbl">Anyone with the link</div><div class="am-link">'+
+      '<label><input type="radio" name="amlink" value="none" '+(link==='none'?'checked':'')+'> No access</label>'+
+      '<label><input type="radio" name="amlink" value="view" '+(link==='view'?'checked':'')+'> Can view</label>'+
+      '<label><input type="radio" name="amlink" value="edit" '+(link==='edit'?'checked':'')+'> Can edit</label>'+
+    '</div></div>'+
+    '<div class="am-sec"><div class="am-lbl">Collaborators</div><div class="am-list">'+rows+'</div>'+
+      '<div class="am-add"><input class="am-user" type="text" placeholder="GitHub username" autocomplete="off">'+
+      '<select class="am-newrole"><option value="editor">Editor</option><option value="viewer">Viewer</option></select>'+
+      '<button class="am-addbtn">Add</button></div></div>'+
+    '<div class="am-foot">Owner: @'+escapeHtml(data.ownerLogin||data.ownerId||'')+'</div></div>';
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.addEventListener('mousedown',e=>{ if(e.target===ov) close(); });
+  ov.querySelector('.am-x').onclick=close;
+  ov.querySelectorAll('input[name="amlink"]').forEach(r=>r.onchange=async()=>{
+    const res=await accessApi(roomId,'link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access:r.value})});
+    toast((res&&res.ok)?('Link access: '+r.value):'Couldn\u2019t update link access');
+  });
+  ov.querySelectorAll('.am-rm').forEach(b=>b.onclick=async()=>{
+    const res=await accessApi(roomId,'acl/'+encodeURIComponent(b.dataset.id),{method:'DELETE'});
+    if(res&&res.ok) openAccessPanel(roomId); else toast('Couldn\u2019t remove collaborator');
+  });
+  ov.querySelector('.am-addbtn').onclick=async()=>{
+    const login=ov.querySelector('.am-user').value; const role=ov.querySelector('.am-newrole').value;
+    if(!login.trim()) return;
+    const u=await _resolveGitHubUser(login);
+    if(!u){ toast('No such GitHub user'); return; }
+    const res=await accessApi(roomId,'acl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:u.id, login:u.login, role})});
+    if(res&&res.ok){ toast('Added @'+u.login); openAccessPanel(roomId); }
+    else toast(res&&res.status===400?'That user is already the owner':'Couldn\u2019t add collaborator');
+  };
+}
 function _cloneObj(o){ return JSON.parse(JSON.stringify(o)); }
 // Diff the loaded base against the current map -> per-node ops the server merges.
 function cloudDiff(base, cur){
@@ -7162,7 +7262,7 @@ async function _recoverCloudSave(ce){
     const room=baseId+'~'+Math.random().toString(36).slice(2,7);
     const token=owned._editToken || ce.token || ('e'+Math.random().toString(36).slice(2,10));
     const url=sharedApiUrl(room); if(!url) return false;
-    const r=await fetch(url,{method:'PUT',headers:{'Content-Type':'application/json','X-Edit-Token':token},body:JSON.stringify(_shareePayload(map))});
+    const r=await _collabFetch(url,{method:'PUT',headers:{'Content-Type':'application/json','X-Edit-Token':token},body:JSON.stringify(_shareePayload(map))});
     if(!r.ok) return false;
     map._cloudEdit={id:room,token}; map._cloudView=room;
     map._cloudBase=_cloneObj(_shareePayload(map));
@@ -7183,7 +7283,7 @@ async function _doCloudSave(ce, retried){
   const ops=cloudDiff(map._cloudBase||cur, cur);
   if(!ops.length){ $('#savePill').classList.remove('saving'); $('#saveText').textContent='Saved'; return; }
   try{
-    const r=await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) });
+    const r=await _collabFetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) });
     if(!r.ok) throw new Error('HTTP '+r.status);
     const res=await r.json().catch(()=>null);
     if(res && res.map) adoptCloudMerged(res.map);
@@ -7216,7 +7316,7 @@ function flushCloudSave(){
   const url=sharedApiUrl(ce.id); if(!url) return;
   const ops=cloudDiff(map._cloudBase||_shareePayload(map), _shareePayload(map));
   if(!ops.length) return;
-  try{ fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) }).catch(()=>{}); }catch(e){}
+  try{ _collabFetch(url, { method:'PATCH', headers:{'Content-Type':'application/json','X-Edit-Token':ce.token}, body:JSON.stringify({ops}) }).catch(()=>{}); }catch(e){}
 }
 // Lightweight polling so shared maps reflect others' edits without a live session.
 function startCloudPoll(id){ stopCloudPoll(); _cloudPollTimer=setInterval(()=>cloudPollOnce(id), 5000); }
@@ -7225,7 +7325,7 @@ async function cloudPollOnce(id){
   if(!map || document.hidden) return;
   if(map._cloudView!==id){ stopCloudPoll(); return; }   // switched away -> stop; never adopt onto another map
   const url=sharedApiUrl(id); if(!url) return;
-  let data; try{ const r=await fetch(url); if(!r.ok) return; data=await r.json(); }catch(e){ return; }
+  let data; try{ const r=await _collabFetch(url); if(!r.ok) return; data=await r.json(); }catch(e){ return; }
   const sig=JSON.stringify(data);
   if(sig===_cloudPollSig) return;                        // nothing new since last poll
   if(map._cloudEdit){
@@ -7256,7 +7356,7 @@ function showCloudEditBanner(){
 // ---- Shared-map core (used by direct-link boot AND in-place open from the sidebar) ----
 async function _fetchSharedMap(id){
   const url=sharedApiUrl(id); if(!url) return null;
-  try{ const r=await fetch(url); if(!r.ok) return null; return await r.json(); }
+  try{ const r=await _collabFetch(url); if(!r.ok) return null; return await r.json(); }
   catch(e){ console.error('shared map load failed', e); return null; }
 }
 // Apply a fetched shared snapshot into the live editor (banner, poll, read-only state).
