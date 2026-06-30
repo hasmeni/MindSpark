@@ -7519,8 +7519,9 @@ async function openSharedInPlace(id, token){
   if(typeof leaveLiveForSwitch==='function' && !leaveLiveForSwitch()) return false;
   flushPendingSave();          // persist the outgoing map
   exitSharedMode();            // clear any previous shared banner/poll
+  showSharedPill(!!token);     // set the shared pill NOW so the username doesn't flash during the fetch
   const data=await _fetchSharedMap(id);
-  if(!data){ toast('Couldn\u2019t open the shared map'); return false; }
+  if(!data){ toast('Couldn\u2019t open the shared map'); if(typeof CloudStore!=='undefined' && CloudStore.user) showUserPill(); return false; }
   _applySharedMap(id, token, data);
   refreshList();               // keep the sidebar populated + highlight the shared row
   try{ window.history.replaceState(null,'', location.origin+location.pathname+'#shared='+id+(token?(':'+token):'')); }catch(e){}
