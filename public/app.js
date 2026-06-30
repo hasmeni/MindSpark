@@ -2684,9 +2684,14 @@ stage.addEventListener('touchstart', e=>{
   if(nodeEl){
     const id=nodeEl.dataset.id;
     select(id,false);
+    panning=false;                       // drop any stale pan state from an interrupted gesture
     dragNode=id; moved=false;
-    dragStart=beginSubtreeDrag(id, t.clientX, t.clientY);
+    // Defer the subtree walk until the finger actually moves, so a plain tap stays
+    // instant even on a large map. (The mouse path does the same; walking eagerly on
+    // every touch froze selection on big maps / low-end Android.)
+    dragStart={ mx:t.clientX, my:t.clientY, root:id, subtree:null };
   } else {
+    dragNode=null;                       // drop any stale drag state from an interrupted gesture
     panning=true; panStart={x:t.clientX,y:t.clientY,vx:view.x,vy:view.y};
     if(sel){ sel=null; document.querySelectorAll('.node.sel').forEach(n=>n.classList.remove('sel')); $('#nodebar')?.remove(); }
   }
@@ -2711,6 +2716,7 @@ window.addEventListener('touchmove', e=>{
     const sc=view.k*_uiZ();
     const dx=(t.clientX-dragStart.mx)/sc, dy=(t.clientY-dragStart.my)/sc;
     if(Math.abs(dx)+Math.abs(dy)>2) moved=true;
+    if(!dragStart.subtree) dragStart=beginSubtreeDrag(dragNode, dragStart.mx, dragStart.my);
     applySubtreeDelta(dragStart, dx, dy);
     drawEdges(hiddenSet());
     positionNodeBar();
@@ -2725,9 +2731,9 @@ window.addEventListener('touchmove', e=>{
 }, {passive:false});
 
 window.addEventListener('touchend', e=>{
-  if(!e.touches) return;
-  if(pinch && e.touches.length<2){ pinch=null; }
-  if(e.touches.length>0) return;       // still touching
+  const remaining = e.touches ? e.touches.length : 0;
+  if(pinch && remaining<2){ pinch=null; }
+  if(remaining>0) return;              // still touching
   if(dragNode){
     if(dropTarget && dragNode!==map.rootId){
       const did = (dropTarget.mode==='on') ? reparent(dragNode, dropTarget.id)
@@ -2739,6 +2745,16 @@ window.addEventListener('touchend', e=>{
     dragNode=null;
   }
   if(panning){ panning=false; saveMapView(); }
+});
+
+// Android (esp. 16) fires touchcancel whenever the system/browser reclaims a gesture
+// (scroll takeover, navigation, app switch, etc.). Without this, touchend never runs,
+// so dragNode/panning/pinch stay set and every later touch is mis-read as a continuing
+// drag — the canvas looks frozen. Reset all gesture state defensively.
+window.addEventListener('touchcancel', ()=>{
+  if(dragNode){ setDropTarget(null); dragNode=null; }
+  if(panning){ panning=false; saveMapView(); }
+  pinch=null; resizing=null; moved=false;
 });
 
 // Double-tap to edit (since dblclick doesn't fire reliably on touch)
