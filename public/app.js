@@ -6610,8 +6610,18 @@ async function proceedBoot(){
   }
 }
 
+function showSharedPill(editable){
+  const pill=$('#userPill'); if(!pill) return;
+  pill.style.display='flex';
+  pill.classList.add('shared-pill');
+  const nm=$('#userName'); if(nm) nm.textContent = editable ? 'Shared map' : 'Shared \u00b7 read-only';
+  pill.title = editable
+    ? 'Editing a shared map \u2014 changes are visible to everyone with access'
+    : 'Viewing a shared map \u2014 read-only';
+}
 function showUserPill(){
   const pill=$('#userPill'); if(!pill) return;
+  pill.classList.remove('shared-pill'); pill.title='';
   pill.style.display='flex';
   $('#userAvatar').src = CloudStore.user.avatar_url;
   $('#userName').textContent = CloudStore.user.login;
@@ -7462,7 +7472,7 @@ function _applySharedMap(id, token, data){
   READONLY=!editable;
   document.body.classList.remove('cloud-edit','shared-view');
   document.body.classList.add(editable?'cloud-edit':'shared-view');
-  const _up=$('#userPill'); if(_up) _up.style.display='none';   // shared maps aren't tied to your GitHub
+  document.body.classList.add('no-banner');   // compact themed pill instead of a full-width banner
   map={ id:'shared-'+id, title:data.title||'Shared map', color:data.color||'#e0613a',
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
@@ -7473,7 +7483,8 @@ function _applySharedMap(id, token, data){
   $('#mapTitle').size = Math.max(8, (map.title||'').length + 1);
   render();
   if(editable) map._cloudBase=_cloneObj(_shareePayload(map));   // base AFTER render (coords baked in)
-  if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
+  if(editable) pushHistory();
+  showSharedPill(editable);
   // A map you published lives under "Shared by me"; don't also file it as a guest
   // entry (that produced a duplicate sidebar row).
   if(!(typeof _sharedByMeStore==='function' && _sharedByMeStore().some(x=>(x.room||x.id)===id)))
@@ -7493,7 +7504,7 @@ function exitSharedMode(){
   stopCloudPoll();
   const ce=document.getElementById('cloudEditBanner'); if(ce) ce.remove();
   const sb=document.getElementById('sharedBanner'); if(sb) sb.remove();
-  document.body.classList.remove('cloud-edit','shared-view');
+  document.body.classList.remove('cloud-edit','shared-view','no-banner');
   READONLY=false;
   if(typeof CloudStore!=='undefined' && CloudStore.user) showUserPill();   // restore your account pill
   const t=$('#mapTitle'); if(t) t.readOnly=false;

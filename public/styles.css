@@ -1376,3 +1376,11 @@ body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
 .access-modal .am-vis{ display:flex; flex-direction:column; gap:5px; }
 .access-modal .am-visrow{ display:flex; align-items:center; justify-content:space-between; padding:5px 10px; background:rgba(255,255,255,.04); border-radius:8px; font-size:13px; }
 .access-modal .am-vtime{ opacity:.55; font-size:12px; }
+
+/* Shared-map indicator: a compact themed pill (replaces the full-width banner). */
+.user-pill.shared-pill{ background:var(--accent); color:#fff; border-color:transparent; font-weight:600; padding:3px 12px; }
+.user-pill.shared-pill img, .user-pill.shared-pill button{ display:none !important; }
+.user-pill.shared-pill span{ display:inline-block !important; padding:0; }
+/* Pill-mode has no banner, so reclaim the space the banner used to reserve. */
+body.no-banner.cloud-edit .app{ padding-top:0; }
+body.no-banner.shared-view .stage{ top:0; }
