@@ -1368,3 +1368,11 @@ body.cloud-edit .app{ padding-top:var(--shared-banner-h, 44px); }
 /* Contextual note on the login overlay when access requires sign-in (e.g. a shared map) */
 .login-share-note{ margin:0 0 14px; padding:10px 13px; border-radius:10px; font-size:13.5px; line-height:1.4;
   background:rgba(224,97,58,.12); border:1px solid rgba(224,97,58,.35); color:#f3c9bb; }
+
+/* Manage-access: require-sign-in toggle + recent-visitors list */
+.access-modal .am-auth{ display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13.5px; cursor:pointer; }
+.access-modal .am-auth input{ margin:0; }
+.access-modal .am-auth input:disabled{ opacity:.4; }
+.access-modal .am-vis{ display:flex; flex-direction:column; gap:5px; }
+.access-modal .am-visrow{ display:flex; align-items:center; justify-content:space-between; padding:5px 10px; background:rgba(255,255,255,.04); border-radius:8px; font-size:13px; }
+.access-modal .am-vtime{ opacity:.55; font-size:12px; }

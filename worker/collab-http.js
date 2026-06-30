@@ -22,7 +22,7 @@ async function applyClaims(storage, d, ident, acl, editToken, request){
     const provided = request.headers.get('X-Edit-Token') || '';
     const tok = editToken || provided || '';
     if(tok && !editToken) await storage.put('editToken', tok);
-    const newAcl = { ownerId: ident.sub, ownerLogin: ident.login, members: {}, linkAccess: tok ? 'edit' : 'none' };
+    const newAcl = { ownerId: ident.sub, ownerLogin: ident.login, members: {}, linkAccess: tok ? 'edit-auth' : 'none' };
     await storage.put('acl', newAcl);
     return newAcl;
   }
@@ -42,6 +42,20 @@ function applyOps(snap, ops){
   return snap;
 }
 
+// Record a signed-in NON-owner who accessed the map, so the owner can see who has
+// opened the shared link. Throttled to at most one storage write per visitor per minute.
+async function recordVisitor(storage, ident, acl){
+  if(!ident || !acl || String(acl.ownerId) === ident.sub) return;
+  const v = await storage.get('visitors') || {};
+  const prev = v[ident.sub]; const now = Date.now();
+  if(prev && (now - (prev.lastSeen || 0)) < 60000) return;   // throttle
+  const role = (acl.members && acl.members[ident.sub]) ? acl.members[ident.sub].role : 'link';
+  v[ident.sub] = { login: ident.login || '', lastSeen: now, role };
+  const keys = Object.keys(v);
+  if(keys.length > 50){ keys.sort((a,b)=>(v[a].lastSeen||0)-(v[b].lastSeen||0)); for(let i=0;i<keys.length-50;i++) delete v[keys[i]]; }
+  await storage.put('visitors', v);
+}
+
 export async function handleCollabHttp(storage, env, request){
   const url = new URL(request.url);
   const after = (url.pathname.split('/api/collab/')[1] || '');
@@ -56,7 +70,8 @@ export async function handleCollabHttp(storage, env, request){
     cur = cur || await storage.get('acl');
 
     if(sub === 'acl' && method === 'GET'){
-      return { status: 200, body: { ownerId: cur.ownerId, ownerLogin: cur.ownerLogin, members: cur.members || {}, linkAccess: cur.linkAccess || 'none' } };
+      const visitors = await storage.get('visitors') || {};
+      return { status: 200, body: { ownerId: cur.ownerId, ownerLogin: cur.ownerLogin, members: cur.members || {}, linkAccess: cur.linkAccess || 'none', visitors } };
     }
     if(sub === 'acl' && method === 'POST'){
       let b; try{ b = await request.json(); }catch(e){ return { status: 400, body: { error: 'bad json' } }; }
@@ -76,7 +91,7 @@ export async function handleCollabHttp(storage, env, request){
     }
     if(sub === 'link' && method === 'POST'){
       let b; try{ b = await request.json(); }catch(e){ return { status: 400, body: { error: 'bad json' } }; }
-      const access = ['none','view','edit'].includes(b && b.access) ? b.access : 'none';
+      const access = ['none','view','edit','view-auth','edit-auth'].includes(b && b.access) ? b.access : 'none';
       cur.linkAccess = access;
       await storage.put('acl', cur);
       return { status: 200, body: { ok: true, linkAccess: access } };
@@ -86,8 +101,9 @@ export async function handleCollabHttp(storage, env, request){
 
   // -------- Map snapshot API --------
   if(method === 'GET'){
-    const { d } = await authz(storage, env, request, 'read', false);
+    const { d, ident, acl } = await authz(storage, env, request, 'read', false);
     if(!d.ok) return { status: d.status, body: { error: d.status === 401 ? 'sign in required' : 'no access' } };
+    await recordVisitor(storage, ident, acl);
     const snap = await storage.get('snapshot');
     return snap ? { status: 200, body: snap } : { status: 404, body: { error: 'not found' } };
   }
@@ -96,7 +112,8 @@ export async function handleCollabHttp(storage, env, request){
     if(!m || typeof m !== 'object') return { status: 400, body: { error: 'map object required' } };
     const { d, ident, acl, editToken } = await authz(storage, env, request, 'write', true);   // PUT may claim ownership
     if(!d.ok) return { status: d.status, body: { error: d.status === 401 ? 'sign in required' : 'no edit access' } };
-    await applyClaims(storage, d, ident, acl, editToken, request);
+    const aclAfter = await applyClaims(storage, d, ident, acl, editToken, request);
+    await recordVisitor(storage, ident, aclAfter || acl);
     await storage.put('snapshot', m);
     return { status: 200, body: { ok: true } };
   }
@@ -104,6 +121,7 @@ export async function handleCollabHttp(storage, env, request){
     const { d, ident, acl, editToken } = await authz(storage, env, request, 'write', false);  // PATCH never claims
     if(!d.ok) return { status: d.status, body: { error: d.status === 401 ? 'sign in required' : 'no edit access' } };
     await applyClaims(storage, d, ident, acl, editToken, request);
+    await recordVisitor(storage, ident, acl);
     let body; try{ body = await request.json(); }catch(e){ return { status: 400, body: { error: 'bad json' } }; }
     const ops = Array.isArray(body && body.ops) ? body.ops : [];
     let snap = await storage.get('snapshot') || { nodes: {} };

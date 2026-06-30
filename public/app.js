@@ -3209,6 +3209,26 @@ async function refreshList(){
       list.appendChild(el);
     });
   }
+  // Shared-by-me: maps you've published. Opening connects to the LIVE shared copy so you
+  // see collaborators' edits (your static "Your maps" copy would not reflect them).
+  const sharedBy=_sharedByMeStore();
+  if(sharedBy.length){
+    const hdr=document.createElement('div'); hdr.className='map-group-label'; hdr.textContent='Shared by me';
+    list.appendChild(hdr);
+    sharedBy.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).forEach(sm=>{
+      const activeShared=(map && map._cloudView===sm.room) || (map && map.id==='shared-'+sm.room);
+      const el=document.createElement('div');
+      el.className='map-item shared-row'+(activeShared?' active':'');
+      el.innerHTML='<span class="dot" style="background:'+(sm.color||'#e0613a')+'"></span>'+
+        '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+
+        '<span class="shared-badge" title="Live shared copy">\uD83D\uDD17</span>'+
+        '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
+      el.style.cursor='pointer';
+      el.onclick=()=>{ if(!(map && map._cloudView===sm.room)) openSharedInPlace(sm.room, sm.token); };
+      el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedByMeRowMenu(ev.currentTarget, sm); };
+      list.appendChild(el);
+    });
+  }
 }
 function escapeHtml(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
@@ -7118,6 +7138,42 @@ function rememberSharedMap(entry){
 }
 function forgetSharedMap(id){ _saveSharedStore(_sharedStore().filter(x=>x.id!==id)); refreshList(); toast('Removed from list'); }
 function openSharedFromLibrary(sm){ openSharedInPlace(sm.id, sm.token); }
+// ---- "Shared by me" library: maps you've published; opening one connects to the LIVE
+// shared copy (polling + merge) so you actually see collaborators' edits. ----
+function _sharedByMeStore(){ try{ return JSON.parse(localStorage.getItem('mindspark:sharedByMe')||'[]'); }catch(e){ return []; } }
+function _saveSharedByMeStore(a){ try{ localStorage.setItem('mindspark:sharedByMe', JSON.stringify(a)); }catch(e){} }
+function rememberSharedByMe(entry){
+  if(!entry || !entry.room) return;
+  const a=_sharedByMeStore(); const at=a.findIndex(x=>x.room===entry.room || x.id===entry.id);
+  const rec={ id:entry.id, room:entry.room, token: entry.token || (at>=0?a[at].token:null),
+              title: entry.title || (at>=0?a[at].title:'Shared map'), color: entry.color || (at>=0?a[at].color:'#e0613a'), addedAt: Date.now() };
+  if(at>=0) a[at]=rec; else a.unshift(rec);
+  _saveSharedByMeStore(a);
+  if(typeof refreshList==='function') refreshList();
+}
+function forgetSharedByMe(room){ _saveSharedByMeStore(_sharedByMeStore().filter(x=>x.room!==room)); refreshList(); toast('Removed from Shared by me'); }
+function openSharedByMeRowMenu(btn, sm){
+  if(_rowPop && _rowPop._for==='sbm:'+sm.room){ closeRowMenu(); return; }
+  if(typeof closeAllMenus==='function') closeAllMenus();
+  closeRowMenu();
+  const pop=document.createElement('div'); pop.className='row-pop'; pop._for='sbm:'+sm.room;
+  pop.innerHTML='<button data-a="open"><span class="rp-ic">\u2197</span>Open live copy</button>'+
+    '<button data-a="copyedit"><span class="rp-ic">\u270F\uFE0F</span>Copy edit link</button>'+
+    '<button data-a="access"><span class="rp-ic">\uD83D\uDD10</span>Manage access</button>'+
+    '<button data-a="forget" class="danger"><span class="rp-ic">\u2715</span>Remove from list</button>';
+  const row = btn.closest('.map-item') || btn.parentElement;
+  row.appendChild(pop);
+  const rb = btn.getBoundingClientRect();
+  if(rb.bottom + pop.offsetHeight + 10 > window.innerHeight){ pop.classList.add('flip-up'); }
+  const editLink=location.origin+location.pathname+'#shared='+sm.room+':'+sm.token;
+  pop.querySelector('[data-a="open"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openSharedInPlace(sm.room, sm.token); };
+  pop.querySelector('[data-a="copyedit"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu(); try{ await navigator.clipboard.writeText(editLink); toast('Edit link copied'); }catch(e){} };
+  pop.querySelector('[data-a="access"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openAccessPanel(sm.room); };
+  pop.querySelector('[data-a="forget"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); forgetSharedByMe(sm.room); };
+  _rowPop=pop;
+  _rowPopOut=(e)=>{ if(_rowPop && (!e || e.type!=='mousedown' || !_rowPop.contains(e.target))) closeRowMenu(); };
+  setTimeout(()=>{ document.addEventListener('mousedown', _rowPopOut, true); window.addEventListener('scroll', closeRowMenu, true); window.addEventListener('blur', closeRowMenu); },0);
+}
 function openSharedRowMenu(btn, sm){
   if(_rowPop && _rowPop._for==='sh:'+sm.id){ closeRowMenu(); return; }
   if(typeof closeAllMenus==='function') closeAllMenus();
@@ -7158,8 +7214,12 @@ async function publishSharedMap(){
     if(!r.ok) throw new Error('HTTP '+r.status);
     const editLink=location.origin+location.pathname+'#shared='+room+':'+map._editToken;
     try{ await navigator.clipboard.writeText(editLink); }catch(e){}
+    map._shareRoom = room;
+    // New editable shares require collaborators to sign in (legacy links stay anonymous until re-shared).
+    try{ await accessApi(room, 'link', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ access:'edit-auth' }) }); }catch(e){}
+    rememberSharedByMe({ id: map.id, room, token: map._editToken, title: map.title, color: map.color });
     if(typeof scheduleSave==='function' && !map._cloudEdit) scheduleSave();   // persist the token in the owner repo so re-publishing reuses it
-    toast('Edit link copied — collaborators can edit & save (view link: same without the “:token”)');
+    toast('Edit link copied — collaborators sign in with GitHub to open it.');
   }catch(e){ toast('Could not publish: '+(e.message||e)); }
 }
 
@@ -7188,35 +7248,66 @@ async function openAccessPanel(roomId){
   if(!acl.ok){ toast('Couldn\u2019t load access settings \u2014 publish the map first'); return; }
   _renderAccessPanel(roomId, acl.d);
 }
+function _timeAgo(ts){
+  const sec=Math.max(0,Math.floor((Date.now()-(ts||0))/1000));
+  if(sec<60) return 'just now';
+  const m=Math.floor(sec/60); if(m<60) return m+'m ago';
+  const h=Math.floor(m/60); if(h<24) return h+'h ago';
+  return Math.floor(h/24)+'d ago';
+}
 function _renderAccessPanel(roomId, data){
   const ex=document.querySelector('.access-modal'); if(ex) ex.remove();
   const ov=document.createElement('div'); ov.className='access-modal';
   const members=data.members||{}; const link=data.linkAccess||'none';
+  // Decompose linkAccess into a level (none/view/edit) + whether sign-in is required.
+  const level = link==='none' ? 'none' : (link.indexOf('view')===0 ? 'view' : 'edit');
+  const requireAuth = /-auth$/.test(link);
   const rows=Object.keys(members).map(id=>{
     const mem=members[id]||{};
     return '<div class="am-row"><span class="am-who">@'+escapeHtml(mem.login||id)+'</span>'+
       '<span class="am-role">'+(mem.role==='viewer'?'Viewer':'Editor')+'</span>'+
       '<button class="am-rm" data-id="'+escapeHtml(id)+'">Remove</button></div>';
   }).join('') || '<div class="am-empty">No named collaborators yet.</div>';
+  const vis=data.visitors||{};
+  const vkeys=Object.keys(vis).sort((a,b)=>(vis[b].lastSeen||0)-(vis[a].lastSeen||0));
+  const visitorsHtml = vkeys.length ? (
+    '<div class="am-sec"><div class="am-lbl">Recently opened by</div><div class="am-vis">'+
+    vkeys.map(id=>'<div class="am-visrow"><span class="am-who">@'+escapeHtml(vis[id].login||id)+'</span>'+
+      '<span class="am-vtime">'+_timeAgo(vis[id].lastSeen)+'</span></div>').join('')+
+    '</div></div>') : '';
   ov.innerHTML='<div class="am-card"><div class="am-head"><b>Manage access</b><button class="am-x" aria-label="Close">\u00d7</button></div>'+
     '<div class="am-sec"><div class="am-lbl">Anyone with the link</div><div class="am-link">'+
-      '<label><input type="radio" name="amlink" value="none" '+(link==='none'?'checked':'')+'> No access</label>'+
-      '<label><input type="radio" name="amlink" value="view" '+(link==='view'?'checked':'')+'> Can view</label>'+
-      '<label><input type="radio" name="amlink" value="edit" '+(link==='edit'?'checked':'')+'> Can edit</label>'+
-    '</div></div>'+
+      '<label><input type="radio" name="amlink" value="none" '+(level==='none'?'checked':'')+'> No access</label>'+
+      '<label><input type="radio" name="amlink" value="view" '+(level==='view'?'checked':'')+'> Can view</label>'+
+      '<label><input type="radio" name="amlink" value="edit" '+(level==='edit'?'checked':'')+'> Can edit</label>'+
+    '</div>'+
+    '<label class="am-auth"><input type="checkbox" class="am-reqauth" '+(requireAuth?'checked':'')+' '+(level==='none'?'disabled':'')+'> Require GitHub sign-in to open</label>'+
+    '</div>'+
     '<div class="am-sec"><div class="am-lbl">Collaborators</div><div class="am-list">'+rows+'</div>'+
       '<div class="am-add"><input class="am-user" type="text" placeholder="GitHub username" autocomplete="off">'+
       '<select class="am-newrole"><option value="editor">Editor</option><option value="viewer">Viewer</option></select>'+
       '<button class="am-addbtn">Add</button></div></div>'+
+    visitorsHtml+
     '<div class="am-foot">Owner: @'+escapeHtml(data.ownerLogin||data.ownerId||'')+'</div></div>';
   document.body.appendChild(ov);
   const close=()=>ov.remove();
   ov.addEventListener('mousedown',e=>{ if(e.target===ov) close(); });
   ov.querySelector('.am-x').onclick=close;
-  ov.querySelectorAll('input[name="amlink"]').forEach(r=>r.onchange=async()=>{
-    const res=await accessApi(roomId,'link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access:r.value})});
-    toast((res&&res.ok)?('Link access: '+r.value):'Couldn\u2019t update link access');
+  const combined=()=>{
+    const lvl=ov.querySelector('input[name="amlink"]:checked').value;
+    if(lvl==='none') return 'none';
+    return ov.querySelector('.am-reqauth').checked ? (lvl+'-auth') : lvl;
+  };
+  const applyLink=async()=>{
+    const access=combined();
+    const res=await accessApi(roomId,'link',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access})});
+    toast((res&&res.ok)?'Link access updated':'Couldn\u2019t update link access');
+  };
+  ov.querySelectorAll('input[name="amlink"]').forEach(r=>r.onchange=()=>{
+    ov.querySelector('.am-reqauth').disabled = (r.value==='none');
+    applyLink();
   });
+  ov.querySelector('.am-reqauth').onchange=applyLink;
   ov.querySelectorAll('.am-rm').forEach(b=>b.onclick=async()=>{
     const res=await accessApi(roomId,'acl/'+encodeURIComponent(b.dataset.id),{method:'DELETE'});
     if(res&&res.ok) openAccessPanel(roomId); else toast('Couldn\u2019t remove collaborator');
