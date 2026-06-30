@@ -1,0 +1,12 @@
+# Forces every new issue through a template (no blank issues), so reports
+# always follow the MindSpark format. If you'd rather still allow free-form
+# issues, set this to true.
+blank_issues_enabled: false
+
+contact_links:
+  - name: 💬 Question, idea, or help
+    url: https://github.com/prasadpatil25/MindSpark/discussions
+    about: For questions, usage help, or general ideas, please use Discussions instead of an issue.
+  - name: 📖 Documentation / README
+    url: https://github.com/prasadpatil25/MindSpark#readme
+    about: Setup, self-hosting, and usage notes are in the README.

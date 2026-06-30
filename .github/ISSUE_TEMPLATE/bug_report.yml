@@ -1,0 +1,182 @@
+name: 🐞 Bug report
+description: Report a problem with MindSpark so it can be reproduced and fixed.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve **MindSpark**! 🙏
+
+        Please fill in the fields below. The more precise the steps and the
+        environment details, the faster this can be reproduced and fixed.
+        A short screen recording is worth a thousand words for UI/touch bugs.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched [existing issues](https://github.com/prasadpatil25/MindSpark/issues?q=is%3Aissue) and this isn't a duplicate.
+          required: true
+        - label: I can reproduce this on the latest version (a hard refresh — Ctrl/Cmd+Shift+R — didn't fix it).
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug — what went wrong.
+      placeholder: e.g. On Android, tapping a topic freezes the whole canvas and nothing responds afterwards.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, numbered, starting from a known state. Include the map/action involved.
+      placeholder: |
+        1. Open a map with ~30 topics
+        2. Tap a topic to select it
+        3. Try to tap a different topic
+        4. Nothing responds — the canvas is frozen
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: e.g. The tapped topic should be selected and the canvas should stay responsive.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of MindSpark?
+      description: Where in the app does the bug occur?
+      options:
+        - Canvas / editing a topic (select, drag, edit, layout)
+        - A map of my own ("Your maps")
+        - A shared map (I'm the owner — "Shared by me")
+        - A shared map (shared with me / opened via a link)
+        - A read-only view link
+        - Manage access / collaborators dialog
+        - Sidebar / map list
+        - Sign in / GitHub login
+        - Themes / appearance
+        - Import / export (Markdown, image, GPT link)
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device type
+      options:
+        - Desktop / laptop (mouse + keyboard)
+        - Phone (touch)
+        - Tablet (touch)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system & version
+      placeholder: e.g. Android 16, Windows 11, macOS 14.5, iOS 17.5
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser & version
+      placeholder: e.g. Chrome 126, Safari 17, Firefox 127, Edge 126
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running MindSpark?
+      options:
+        - Hosted app (mindspark.githubpage.workers.dev)
+        - Self-hosted (my own Cloudflare Worker / Pages)
+        - GitHub Pages
+        - Running locally
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Were you signed in?
+      options:
+        - Signed in with GitHub
+        - Anonymous (no account)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: theme
+    attributes:
+      label: Theme (if appearance-related)
+      description: Which theme was active? Helps a lot for contrast/color bugs.
+      placeholder: e.g. GitHub Light, Dark, Paper
+    validations:
+      required: false
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors
+      description: |
+        Open the browser console (F12 → Console, or on mobile use remote debugging) and paste anything in red.
+        This is optional but extremely helpful.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or screen recording
+      description: Drag-and-drop images or a short video. For UI/touch freezes, a recording is the single most useful thing.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      options:
+        - Every time (100%)
+        - Often
+        - Sometimes / intermittent
+        - Happened once
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit / URL
+      description: If you know it — the app URL you used, or the commit SHA if self-hosting.
+      placeholder: e.g. mindspark.githubpage.workers.dev, or commit 02e02c3
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Map size, whether it started after a specific action, workarounds you found, etc.
+    validations:
+      required: false
