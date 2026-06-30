@@ -3190,42 +3190,32 @@ async function refreshList(){
     el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openRowMenu(ev.currentTarget, m); };
     list.appendChild(el);
   });
-  // Shared-with-me: cloud maps you've opened via a link (kept per-browser).
-  const shared=_sharedStore();
-  if(shared.length){
-    const hdr=document.createElement('div'); hdr.className='map-group-label'; hdr.textContent='Shared with me';
+  // Shared maps: one list combining maps you've shared OUT (you're the owner) and maps
+  // shared WITH you (you're a guest), deduped by room. Opening connects to the LIVE copy.
+  const _byMe=_sharedByMeStore(), _withMe=_sharedStore();
+  const _seen=new Set(); const _unified=[];
+  _byMe.forEach(x=>{ const room=x.room||x.id; if(!room||_seen.has(room)) return; _seen.add(room);
+    _unified.push({ room, token:x.token, title:x.title, color:x.color, addedAt:x.addedAt, mine:true }); });
+  _withMe.forEach(x=>{ const room=x.id; if(!room) return;
+    if(_seen.has(room)){ try{ _saveSharedStore(_sharedStore().filter(e=>e.id!==room)); }catch(e){} return; }  // self-heal an old double-filing
+    _seen.add(room);
+    _unified.push({ room, token:x.token, title:x.title, color:x.color, addedAt:x.addedAt, mine:false }); });
+  if(_unified.length){
+    const hdr=document.createElement('div'); hdr.className='map-group-label'; hdr.textContent='Shared maps';
     list.appendChild(hdr);
-    shared.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).forEach(sm=>{
-      const activeShared = (map && map._cloudEdit && map._cloudEdit.id===sm.id) || (map && map.id==='shared-'+sm.id);
-      const el=document.createElement('div');
-      el.className='map-item shared-row'+(activeShared?' active':'');
-      el.innerHTML='<span class="dot" style="background:'+(sm.color||'#e0613a')+'"></span>'+
-        '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+
-        '<span class="shared-badge" title="'+(sm.token?'Editable':'View only')+'">'+(sm.token?'\u270F\uFE0F':'\uD83D\uDC41')+'</span>'+
-        '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
-      el.style.cursor='pointer';
-      el.onclick=()=>{ if(!(map && map.id==='shared-'+sm.id)) openSharedFromLibrary(sm); };
-      el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedRowMenu(ev.currentTarget, sm); };
-      list.appendChild(el);
-    });
-  }
-  // Shared-by-me: maps you've published. Opening connects to the LIVE shared copy so you
-  // see collaborators' edits (your static "Your maps" copy would not reflect them).
-  const sharedBy=_sharedByMeStore();
-  if(sharedBy.length){
-    const hdr=document.createElement('div'); hdr.className='map-group-label'; hdr.textContent='Shared by me';
-    list.appendChild(hdr);
-    sharedBy.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).forEach(sm=>{
+    _unified.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).forEach(sm=>{
       const activeShared=(map && map._cloudView===sm.room) || (map && map.id==='shared-'+sm.room);
       const el=document.createElement('div');
       el.className='map-item shared-row'+(activeShared?' active':'');
+      const badge = sm.mine
+        ? '<span class="shared-badge" title="Shared by you">\uD83D\uDD17</span>'
+        : '<span class="shared-badge" title="'+(sm.token?'Shared with you \u00b7 editable':'Shared with you \u00b7 view only')+'">'+(sm.token?'\u270F\uFE0F':'\uD83D\uDC41')+'</span>';
       el.innerHTML='<span class="dot" style="background:'+(sm.color||'#e0613a')+'"></span>'+
-        '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+
-        '<span class="shared-badge" title="Live shared copy">\uD83D\uDD17</span>'+
+        '<span class="nm">'+escapeHtml(sm.title||'Shared map')+'</span>'+badge+
         '<button class="row-menu" title="More" aria-haspopup="true" aria-label="More actions">\u22ee</button>';
       el.style.cursor='pointer';
       el.onclick=()=>{ if(!(map && map._cloudView===sm.room)) openSharedInPlace(sm.room, sm.token); };
-      el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedByMeRowMenu(ev.currentTarget, sm); };
+      el.querySelector('.row-menu').onclick=ev=>{ ev.stopPropagation(); openSharedRowMenu(ev.currentTarget, sm); };
       list.appendChild(el);
     });
   }
@@ -7175,23 +7165,27 @@ function openSharedByMeRowMenu(btn, sm){
   setTimeout(()=>{ document.addEventListener('mousedown', _rowPopOut, true); window.addEventListener('scroll', closeRowMenu, true); window.addEventListener('blur', closeRowMenu); },0);
 }
 function openSharedRowMenu(btn, sm){
-  if(_rowPop && _rowPop._for==='sh:'+sm.id){ closeRowMenu(); return; }
+  const key='sh:'+(sm.room||sm.id);
+  if(_rowPop && _rowPop._for===key){ closeRowMenu(); return; }
   if(typeof closeAllMenus==='function') closeAllMenus();
   closeRowMenu();
-  const pop=document.createElement('div'); pop.className='row-pop'; pop._for='sh:'+sm.id;
+  const room=sm.room||sm.id;
+  const pop=document.createElement('div'); pop.className='row-pop'; pop._for=key;
   pop.innerHTML='<button data-a="open"><span class="rp-ic">\u2197</span>Open</button>'+
     (sm.token?'<button data-a="copyedit"><span class="rp-ic">\u270F\uFE0F</span>Copy edit link</button>':'')+
     '<button data-a="copyview"><span class="rp-ic">\uD83D\uDD17</span>Copy view link</button>'+
+    (sm.mine?'<button data-a="access"><span class="rp-ic">\uD83D\uDD10</span>Manage access</button>':'')+
     '<button data-a="forget" class="danger"><span class="rp-ic">\u2715</span>Remove from list</button>';
   const row = btn.closest('.map-item') || btn.parentElement;
   row.appendChild(pop);
   const rb = btn.getBoundingClientRect();
   if(rb.bottom + pop.offsetHeight + 10 > window.innerHeight){ pop.classList.add('flip-up'); }
-  const base=location.origin+location.pathname+'#shared='+sm.id;
-  pop.querySelector('[data-a="open"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openSharedFromLibrary(sm); };
+  const base=location.origin+location.pathname+'#shared='+room;
+  pop.querySelector('[data-a="open"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openSharedInPlace(room, sm.token); };
   const ce=pop.querySelector('[data-a="copyedit"]'); if(ce) ce.onclick=async ev=>{ ev.stopPropagation(); closeRowMenu(); try{ await navigator.clipboard.writeText(base+':'+sm.token); toast('Edit link copied'); }catch(e){} };
   pop.querySelector('[data-a="copyview"]').onclick=async ev=>{ ev.stopPropagation(); closeRowMenu(); try{ await navigator.clipboard.writeText(base); toast('View link copied'); }catch(e){} };
-  pop.querySelector('[data-a="forget"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); forgetSharedMap(sm.id); };
+  const ac=pop.querySelector('[data-a="access"]'); if(ac) ac.onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); openAccessPanel(room); };
+  pop.querySelector('[data-a="forget"]').onclick=ev=>{ ev.stopPropagation(); closeRowMenu(); if(sm.mine) forgetSharedByMe(room); else forgetSharedMap(room); };
   _rowPop=pop;
   _rowPopOut=(e)=>{ if(_rowPop && (!e || e.type!=='mousedown' || !_rowPop.contains(e.target))) closeRowMenu(); };
   setTimeout(()=>{ document.addEventListener('mousedown', _rowPopOut, true); window.addEventListener('scroll', closeRowMenu, true); window.addEventListener('blur', closeRowMenu); },0);
@@ -7480,7 +7474,10 @@ function _applySharedMap(id, token, data){
   render();
   if(editable) map._cloudBase=_cloneObj(_shareePayload(map));   // base AFTER render (coords baked in)
   if(editable){ pushHistory(); showCloudEditBanner(); } else showSharedBanner();
-  rememberSharedMap({ id, token, title: map.title, color: map.color });
+  // A map you published lives under "Shared by me"; don't also file it as a guest
+  // entry (that produced a duplicate sidebar row).
+  if(!(typeof _sharedByMeStore==='function' && _sharedByMeStore().some(x=>(x.room||x.id)===id)))
+    rememberSharedMap({ id, token, title: map.title, color: map.color });
   _cloudPollSig = JSON.stringify(data);
   startCloudPoll(id);
   let tries=0;
