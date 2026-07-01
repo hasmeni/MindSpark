@@ -7426,6 +7426,9 @@ async function _doCloudSave(ce, retried){
 }
 function scheduleCloudSave(){
   const ce=map._cloudEdit; if(!ce) return;
+  if(map._opening) return;                    // just opened this shared map — not a user edit
+  const cur=_shareePayload(map);
+  if(!cloudDiff(map._cloudBase||cur, cur).length) return;   // nothing actually changed — don't flash "Saving…"
   $('#savePill').classList.add('saving'); $('#saveText').textContent='Saving…';
   clearTimeout(_cloudSaveTimer);
   _cloudSaveTimer=setTimeout(()=>{ _cloudSaveTimer=0; _doCloudSave(ce); }, 1200);
@@ -7493,6 +7496,7 @@ function _applySharedMap(id, token, data){
         style:data.style, layout:data.layout||'balanced', rootId:data.rootId,
         nodes:data.nodes||{}, links:data.links||[], vars:data.vars||{} };
   map._cloudView=id;
+  map._opening=true;                 // opening a shared map isn't an edit — suppress the save pill until it settles
   if(editable){ map._cloudEdit={ id, token }; }
   sel=null; history=[]; hpos=-1;
   $('#mapTitle').value=map.title; $('#mapTitle').readOnly=!editable;
@@ -7509,7 +7513,7 @@ function _applySharedMap(id, token, data){
   startCloudPoll(id);
   let tries=0;
   const rebase=()=>{ if(editable) map._cloudBase=_cloneObj(_shareePayload(map)); };
-  const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); rebase(); } else if(tries++<60){ requestAnimationFrame(settle); } };
+  const settle=()=>{ if(stage.getBoundingClientRect().width>1){ autoLayout(); fit(); rebase(); map._opening=false; } else if(tries++<60){ requestAnimationFrame(settle); } else { map._opening=false; } };
   requestAnimationFrame(settle);
 }
 // Leave shared mode WITHOUT a reload: flush a pending save, stop polling, drop the
