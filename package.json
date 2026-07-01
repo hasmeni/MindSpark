@@ -4,16 +4,31 @@
   "description": "Open-source, self-hostable mind mapping app with a SQLite database backend. Zero dependencies, no restrictions.",
   "license": "MIT",
   "main": "server.js",
+  "bin": "launcher.js",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
     "deploy": "wrangler deploy",
-    "preview": "wrangler dev"
+    "preview": "wrangler dev",
+    "build:exe": "pkg . --output dist/mindspark",
+    "build:win": "pkg . --target node22-win-x64 --output dist/mindspark.exe",
+    "build:mac": "pkg . --target node22-macos-x64 --output dist/mindspark-macos",
+    "build:linux": "pkg . --target node22-linux-x64 --output dist/mindspark-linux"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*"
+    ],
+    "targets": [
+      "node22-win-x64"
+    ],
+    "outputPath": "dist"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@yao-pkg/pkg": "^6.0.0",
     "wrangler": "^4.100.0"
   }
 }
